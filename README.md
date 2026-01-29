@@ -1,6 +1,6 @@
 # DocMe - Personal Activity Tracker
 
-A privacy-first, local activity tracker designed to run seamlessly on **macOS** and **Windows**. DocMe captures your work activity, generates AI-powered summaries, and helps you document your day without ever sending your data to the cloud.
+A privacy-first, local activity tracker designed to run seamlessly on **macOS**. DocMe captures your work activity, generates AI-powered summaries, and helps you document your day without ever sending your data to the cloud.
 
 ---
 
@@ -46,13 +46,6 @@ DocMe provides dedicated builds for each platform. Navigate to your platform's d
 **For macOS:**
 ```bash
 cd macOS/frontend
-npm install
-cd ../..
-```
-
-**For Windows:**
-```bash
-cd Windows/frontend
 npm install
 cd ../..
 ```
@@ -104,12 +97,6 @@ python3 scripts/build_dist.py macOS
 ```
 *Output:* `macOS/frontend/release/DocMe-1.0.0.dmg`
 
-**For Windows (.exe):**
-```bash
-python3 scripts/build_dist.py Windows
-```
-*Output:* `Windows/frontend/release/DocMe Setup 1.0.0.exe` (Note: If building on macOS, you must have `wine` installed. Otherwise, please run this build command on a Windows machine to generate the `.exe`).
-
 ---
 
 ## ⌨️ Keyboard Shortcuts (Default)
@@ -126,7 +113,6 @@ python3 scripts/build_dist.py Windows
 ## 🛠 Troubleshooting
 
 - **macOS Permissions**: If you see "Could not retrieve foreground window," ensure you have granted **Accessibility** and **Screen Recording** permissions to the terminal/app in `System Settings > Privacy & Security`.
-- **Windows Dependencies**: Ensure you have installed the build tools if `psutil` or `pywin32` fails to install during the `pip` step.
 - **Port Conflict**: If the app fails to start, ensure port `8000` (Backend) and `5173` (Frontend) are not being used by other apps.
 
 ---
