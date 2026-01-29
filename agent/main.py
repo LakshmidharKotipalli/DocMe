@@ -9,7 +9,7 @@ from loguru import logger
 from datetime import datetime
 
 from agent.collectors.base import get_foreground_window, get_idle_time
-from agent.store.models import init_db, Event
+from agent.store.models import init_db, Event, SystemLog
 from agent.collectors.fswatch.watcher import FileWatcher
 from agent.collectors.logic_tracker import LogicTracker
 import sys
@@ -20,9 +20,34 @@ elif sys.platform == "win32":
     from agent.collectors.browser.windows import is_browser_windows, get_browser_url_windows
 
 class DocMeAgent:
-    def __init__(self, config_path="config/docme.yaml"):
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+    def __init__(self, config_path=None):
+        # Search for config in multiple locations
+        search_paths = []
+        if config_path:
+            search_paths.append(config_path)
+            
+        if sys.platform == "darwin":
+            search_paths.append(os.path.expanduser("~/Library/Application Support/DocMe/docme.yaml"))
+        elif sys.platform == "win32":
+            search_paths.append(os.path.join(os.environ.get("APPDATA", ""), "DocMe", "docme.yaml"))
+        
+        search_paths.append("config/docme.yaml")
+        
+        self.config = {}
+        self.config_path = config_path # Store intended path
+        
+        for p in search_paths:
+            if os.path.exists(p):
+                with open(p, 'r') as f:
+                    self.config = yaml.safe_load(f)
+                    self.config_path = p # Store discovered path
+                    break
+        
+        if not self.config:
+            # Fallback or default values if no config found
+            self.config = {"database": {"type": "sqlite"}}
+            if not self.config_path:
+                self.config_path = "config/docme.yaml"
         
         self.db_path = self.config.get('db_path', 'data/docme.sqlite')
         self.SessionLocal = init_db(self.db_path)
@@ -45,12 +70,35 @@ class DocMeAgent:
         self.last_heartbeat = time.time()
         
         # Initialize FileWatcher
-        self.fswatcher = FileWatcher(config_path, self.record_event)
+        self.fswatcher = FileWatcher(self.config_path, self.record_event)
         
         # Initialize LogicTracker
         self.logic_interval = self.config.get('logic_tracking_interval_sec', 30)
         watched_dirs = self.config.get('watched_directories', [os.getcwd()])
-        self.logic_tracker = LogicTracker(self.logic_interval, self.record_event, watch_dirs=watched_dirs)
+        self.logic_tracker = LogicTracker(self.logic_interval, self.record_event, watch_dirs=watched_dirs, config_path=self.config_path)
+
+        # Setup Database Logger
+        self._setup_db_logger()
+
+    def _setup_db_logger(self):
+        def db_sink(message):
+            record = message.record
+            session = self.SessionLocal()
+            try:
+                log = SystemLog(
+                    level=record["level"].name,
+                    message=record["message"],
+                    module=record["module"],
+                    ts=record["time"]
+                )
+                session.add(log)
+                session.commit()
+            except:
+                session.rollback()
+            finally:
+                session.close()
+
+        logger.add(db_sink, level="INFO", format="{message}")
 
     def is_idle(self):
         return get_idle_time() > self.idle_threshold

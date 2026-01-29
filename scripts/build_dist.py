@@ -3,59 +3,42 @@ import os
 import sys
 import shutil
 
-def build_app(platform):
-    print(f"--- Building DocMe for {platform} ---")
+def build_app():
+    print("--- Building DocMe DMG ---")
     
     # 1. Determine directories
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", platform))
-    frontend_dir = os.path.join(base_dir, "frontend")
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    frontend_dir = os.path.join(root_dir, "frontend")
     
-    if not os.path.exists(base_dir):
-        print(f"Error: {platform} directory not found at {base_dir}")
+    if not os.path.exists(frontend_dir):
+        print(f"Error: Frontend directory not found at {frontend_dir}")
         return
 
-    # 2. Install dependencies (if needed)
+    # 2. Install dependencies
     print(f"Installing frontend dependencies in {frontend_dir}...")
     subprocess.run(["npm", "install"], cwd=frontend_dir, check=True)
 
-    # 3. Build the frontend and pack the app
-    print("Building and packaging the application...")
-    # This runs 'npm run build' (Vite) and then 'electron-builder'
+    # 3. Build and package
+    print("Building and packaging the application (macOS DMG)...")
     subprocess.run(["npm", "run", "electron:build"], cwd=frontend_dir, check=True)
 
-    # 4. Success
+    # 4. Success check
     output_dir = os.path.join(frontend_dir, "release")
-    print(f"\nSuccess! Downloadable files for {platform} are located in:")
-    print(output_dir)
+    print(f"\nBuild process finished. Check {output_dir} for output.")
     
-    # List the generated files
     if os.path.exists(output_dir):
         files = os.listdir(output_dir)
-        found_target = False
-        for f in files:
-            if platform == "macOS" and f.endswith(('.dmg', '.zip')):
-                print(f" - {f}")
-                found_target = True
-            elif platform == "Windows" and f.endswith(('.exe', '.msi')):
-                print(f" - {f}")
-                found_target = True
-        
-        if not found_target:
-            print(f"\nWarning: Build completed but no native {platform} installer was found.")
-            print("If you are on macOS and building for Windows, ensure you have 'wine' installed.")
+        dmgs = [f for f in files if f.endswith('.dmg')]
+        if dmgs:
+            print("\nGenerated DMG files:")
+            for dmg in dmgs:
+                print(f" - {dmg}")
+        else:
+            print("\nNo DMG files found. Please check build logs.")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python scripts/build_dist.py <macOS|Windows>")
-        sys.exit(1)
-    
-    platform = sys.argv[1]
-    if platform not in ["macOS", "Windows"]:
-        print("Error: Platform must be 'macOS' or 'Windows'")
-        sys.exit(1)
-        
     try:
-        build_app(platform)
+        build_app()
     except subprocess.CalledProcessError as e:
         print(f"\nBuild failed: {e}")
         sys.exit(1)

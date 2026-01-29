@@ -30,7 +30,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportReport: () => ipcRenderer.invoke('export-report'),
 
   // App info
-  getVersion: () => ipcRenderer.invoke('get-version')
+  getVersion: () => ipcRenderer.invoke('get-version'),
+
+  // LLM Controls
+  startLLM: (model) => ipcRenderer.invoke('start-llm', { model }),
+  stopLLM: () => ipcRenderer.invoke('stop-llm'),
+  getLLMStatus: () => ipcRenderer.invoke('get-llm-status'),
+  onLLMStatusChanged: (callback) => ipcRenderer.on('llm-status-changed', (event, status) => callback(status))
 });
 
 // Add custom CSS for native feel

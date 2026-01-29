@@ -1,13 +1,15 @@
 from fastapi import FastAPI, HTTPException, Query, Body, WebSocket, WebSocketDisconnect
+import sys
 import json
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 import yaml
 import os
 from datetime import datetime
-from agent.store.models import init_db, Event, Session as DbSession, Report
+from agent.store.models import init_db, Event, Session as DbSession, Report, SystemLog
 from backend.session_builder.builder import SessionBuilder
 from backend.report_generator.generator import ReportGenerator
+from loguru import logger
 
 app = FastAPI(title="DocMe API")
 
@@ -20,15 +22,49 @@ app.add_middleware(
 )
 
 # Load config
-CONFIG_PATH = "config/docme.yaml"
-with open(CONFIG_PATH, 'r') as f:
-    config = yaml.safe_load(f)
+def load_config():
+    search_paths = []
+    if sys.platform == "darwin":
+        search_paths.append(os.path.expanduser("~/Library/Application Support/DocMe/docme.yaml"))
+    elif sys.platform == "win32":
+        search_paths.append(os.path.join(os.environ.get("APPDATA", ""), "DocMe", "docme.yaml"))
+    
+    search_paths.append("config/docme.yaml")
+    
+    for p in search_paths:
+        if os.path.exists(p):
+            with open(p, 'r') as f:
+                return yaml.safe_load(f)
+    return {"database": {"type": "sqlite"}}
 
-DB_PATH = config.get('db_path', 'data/docme.sqlite')
-SessionLocal = init_db(DB_PATH)
+config = load_config()
+
+# Use engine URL from models which handles location
+SessionLocal = init_db()
 
 builder = SessionBuilder(SessionLocal)
 reporter = ReportGenerator(SessionLocal)
+
+# Setup Database Logger for Backend
+def db_sink(message):
+    record = message.record
+    db = SessionLocal()
+    try:
+        log = SystemLog(
+            level=record["level"].name,
+            message=record["message"],
+            module=record["module"],
+            ts=record["time"]
+        )
+        db.add(log)
+        db.commit()
+    except:
+        db.rollback()
+    finally:
+        db.close()
+
+logger.add(db_sink, level="INFO", format="{message}")
+logger.info("Backend API started and logging to database enabled")
 
 class ConnectionManager:
     def __init__(self):
@@ -153,6 +189,23 @@ def get_latest_report():
         return report
     finally:
         db.close()
+@app.post("/events/clear-day")
+def clear_day_events(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    db = SessionLocal()
+    try:
+        start = datetime.strptime(date, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        db.query(Event).filter(Event.ts >= start, Event.ts <= end).delete()
+        db.query(DbSession).filter(DbSession.start_ts >= start, DbSession.start_ts <= end).delete()
+        db.commit()
+        return {"status": "success", "message": f"Cleared all data for {date}"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 @app.post("/events/clear")
 def clear_events():
     db = SessionLocal()
@@ -164,5 +217,14 @@ def clear_events():
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.get("/logs")
+def get_logs(limit: int = 100):
+    db = SessionLocal()
+    try:
+        logs = db.query(SystemLog).order_by(SystemLog.ts.desc()).limit(limit).all()
+        return logs
     finally:
         db.close()

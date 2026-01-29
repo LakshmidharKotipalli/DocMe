@@ -7,15 +7,15 @@
   /* Translucent dark background */
   --glass-bg: rgba(255, 255, 255, 0.03);
   --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-accent: rgba(99, 102, 241, 0.08);
-  --primary-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
-  --accent-blue: #60a5fa;
-  --accent-purple: #c084fc;
+  --glass-accent: rgba(163, 230, 53, 0.08);
+  --primary-gradient: linear-gradient(135deg, #a3e635 0%, #2dd4bf 100%);
+  --accent-blue: #2dd4bf;
+  --accent-purple: #a3e635;
   --accent-amber: #fbbf24;
   --accent-emerald: #34d399;
   --text-primary: #ffffff;
-  --text-glow: 0 0 15px rgba(255, 255, 255, 0.3);
-  --btn-glow: 0 0 20px rgba(99, 102, 241, 0.4);
+  --text-glow: 0 0 15px rgba(163, 230, 53, 0.3);
+  --btn-glow: 0 0 20px rgba(163, 230, 53, 0.4);
   --text-secondary: #94a3b8;
   --text-muted: #64748b;
   --card-radius: 20px;
@@ -128,14 +128,14 @@ body {
 }
 
 .glow-1 {
-  background: #6366f1;
+  background: #a3e635;
   top: -15%;
   right: -5%;
   animation: float 20s infinite alternate;
 }
 
 .glow-2 {
-  background: #a855f7;
+  background: #2dd4bf;
   bottom: -15%;
   left: -5%;
   animation: float 25s infinite alternate-reverse;
@@ -169,7 +169,7 @@ body {
 
 /* Typography Utilities */
 .gradient-text {
-  background: linear-gradient(to right, #ffffff, #818cf8, #a855f7);
+  background: linear-gradient(to right, #ffffff, #a3e635, #2dd4bf);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -198,7 +198,7 @@ body {
 
 .bright-btn:hover {
   transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 0 30px rgba(99, 102, 241, 0.6);
+  box-shadow: 0 0 30px rgba(163, 230, 53, 0.6);
   filter: brightness(1.2);
 }
 
@@ -251,8 +251,8 @@ body {
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 4px;
-  background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
+  background: rgba(163, 230, 53, 0.15);
+  color: #a3e635;
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -392,15 +392,15 @@ body {
 }
 
 .tab-btn.active.logs {
-  border-color: #818cf8;
-  background: rgba(129, 140, 248, 0.1);
-  color: #818cf8;
+  border-color: #a3e635;
+  background: rgba(163, 230, 53, 0.1);
+  color: #a3e635;
 }
 
 .tab-btn.active.report {
-  border-color: #10b981;
-  background: rgba(16, 185, 129, 0.1);
-  color: #10b981;
+  border-color: #2dd4bf;
+  background: rgba(45, 212, 191, 0.1);
+  color: #2dd4bf;
 }
 
 .note-textarea {
@@ -415,14 +415,15 @@ body {
   resize: none;
   margin-bottom: 20px;
   font-size: 14px;
+  -webkit-app-region: no-drag !important;
 }
 
 .note-display {
   margin-top: 10px;
   padding: 10px 16px;
-  background: rgba(129, 140, 248, 0.05);
+  background: rgba(163, 230, 53, 0.05);
   border-radius: 8px;
-  border-left: 3px solid #818cf8;
+  border-left: 3px solid #a3e635;
   font-size: 13px;
   color: var(--text-secondary);
   font-style: italic;
@@ -503,7 +504,7 @@ input[type="checkbox"] {
 }
 
 input[type="checkbox"]:checked {
-  background: #10b981;
+  background: #a3e635;
 }
 
 input[type="checkbox"]::before {
@@ -553,4 +554,13 @@ input[type="checkbox"]:checked::before {
   border-radius: 16px;
   padding: 20px;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+.toast-content {
+  -webkit-app-region: drag;
+}
+
+.toast-content button,
+.toast-content textarea,
+.toast-content .no-drag {
+  -webkit-app-region: no-drag !important;
 }

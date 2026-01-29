@@ -61,7 +61,10 @@ class DocMeFileEventHandler(FileSystemEventHandler):
             self.record_callback("fswatch", "File System", f"Created: {os.path.basename(event.src_path)}", {"path": event.src_path, "action": "created"})
 
 class FileWatcher:
-    def __init__(self, config_path="config/docme.yaml", record_callback=None):
+    def __init__(self, config_path=None, record_callback=None):
+        if config_path is None:
+            config_path = "config/docme.yaml"
+        
         import yaml
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)

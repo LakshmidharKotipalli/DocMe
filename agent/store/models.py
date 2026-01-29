@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 import datetime
 import os
 import yaml
+import sys
 
 Base = declarative_base()
 
@@ -47,18 +48,54 @@ class Artifact(Base):
     ref = Column(Text)
     meta_json = Column(Text)
 
-def get_engine_url(config_path="config/docme.yaml"):
+class SystemLog(Base):
+    __tablename__ = 'system_logs'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ts = Column(DateTime, default=lambda: datetime.datetime.now())
+    level = Column(String(20)) # INFO|ERROR|WARNING|DEBUG
+    message = Column(Text)
+    module = Column(String(100))
+
+def get_engine_url(config_path=None):
+    # Default config paths to check
+    search_paths = []
+    if config_path:
+        search_paths.append(config_path)
+    
+    # Check standard locations
+    if sys.platform == "darwin":
+        search_paths.append(os.path.expanduser("~/Library/Application Support/DocMe/docme.yaml"))
+    elif sys.platform == "win32":
+        search_paths.append(os.path.join(os.environ.get("APPDATA", ""), "DocMe", "docme.yaml"))
+    
+    search_paths.append("config/docme.yaml")
+    
+    config = {}
+    used_config_path = None
+    for p in search_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, 'r') as f:
+                    config = yaml.safe_load(f)
+                    used_config_path = p
+                    break
+            except:
+                continue
+
     try:
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        
         db_config = config.get('database', {})
         if db_config.get('type') == 'postgresql':
             pg = db_config.get('postgres', {})
             return f"postgresql://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['dbname']}"
         
         # Default to SQLite
-        sqlite_path = db_config.get('sqlite_path', config.get('db_path', 'data/docme.sqlite'))
+        default_sqlite = "data/docme.sqlite"
+        if sys.platform == "darwin":
+            default_sqlite = os.path.expanduser("~/Library/Application Support/DocMe/docme.sqlite")
+        elif sys.platform == "win32":
+            default_sqlite = os.path.join(os.environ.get("APPDATA", ""), "DocMe", "docme.sqlite")
+            
+        sqlite_path = db_config.get('sqlite_path', config.get('db_path', default_sqlite))
         os.makedirs(os.path.dirname(sqlite_path), exist_ok=True)
         return f'sqlite:///{sqlite_path}'
     except:

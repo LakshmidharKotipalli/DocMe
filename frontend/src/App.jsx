@@ -96,8 +96,16 @@ const PopupNote = () => {
 };
 
 const Dashboard = () => {
+  const getLocalDate = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   const [activeTab, setActiveTab] = useState('logs');
-  const [activeDate, setActiveDate] = useState(new Date().toISOString().split('T')[0]);
+  const [activeDate, setActiveDate] = useState(getLocalDate());
   const [sessions, setSessions] = useState([]);
   const [events, setEvents] = useState([]);
   const [report, setReport] = useState(null);
@@ -112,11 +120,12 @@ const Dashboard = () => {
     notificationsEnabled: true,
     showInDock: true,
     llmApiKey: '',
-    llmModel: 'gemma3:1b'
+    llmModel: 'ggml-org/gemma-3-1b-it-GGUF'
   });
+  const [llmServerRunning, setLlmServerRunning] = useState(false);
   const [targetEvent, setTargetEvent] = useState(null);
   const quickNoteRef = useRef(null);
-  const lastActivityRef = useRef({ app: '', title: '' });
+  const lastActivityRef = useRef({ app: '', title: '', id: null });
 
   useEffect(() => {
     fetchData();
@@ -144,6 +153,8 @@ const Dashboard = () => {
         setQuickNoteOpen(true);
         setTimeout(() => quickNoteRef.current?.focus(), 100);
       });
+      window.electronAPI.getLLMStatus().then(status => setLlmServerRunning(status));
+      window.electronAPI.onLLMStatusChanged((status) => setLlmServerRunning(status));
     }
   }, []);
 
@@ -158,15 +169,32 @@ const Dashboard = () => {
             data.window_title !== lastActivityRef.current.title;
 
           if (hasChanged) {
-            lastActivityRef.current = { app: data.app, title: data.window_title };
+            const previous = { ...lastActivityRef.current };
 
-            // Trigger system-wide popup via Electron main process
-            setTimeout(() => {
-              if (isElectron) {
-                window.electronAPI.createPopupWindow(data);
-              }
-              fetchData();
-            }, 1000);
+            // Update ref with NEW activity data
+            lastActivityRef.current = {
+              id: data.id,
+              app: data.app,
+              title: data.window_title
+            };
+
+            // Only trigger popup for the activity we just LEFT
+            // and only if it was a real activity (foreground or browser)
+            const isTrackedSource = data.source === 'foreground_window' || data.source === 'browser';
+
+            if (previous.app && previous.id && isTrackedSource) {
+              setTimeout(() => {
+                if (isElectron) {
+                  window.electronAPI.createPopupWindow({
+                    id: previous.id,
+                    app: previous.app,
+                    window_title: previous.title
+                  });
+                }
+              }, 500);
+            }
+
+            fetchData();
           } else {
             // Even if we don't pop up, still refresh data to show logs in dashboard
             fetchData();
@@ -229,7 +257,32 @@ const Dashboard = () => {
     } catch (err) {
       console.error("Save Note Error:", err);
     }
-  }; const deleteEvent = async (eventId) => {
+  };
+
+  const saveQuickNote = async () => {
+    const eventId = targetEvent?.id || events[0]?.id;
+    if (!eventId || !noteText.trim()) {
+      setQuickNoteOpen(false);
+      setTargetEvent(null);
+      return;
+    }
+    try {
+      await fetch(`${API_BASE}/events/${eventId}/note`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: noteText })
+      });
+      setQuickNoteOpen(false);
+      setTargetEvent(null);
+      setNoteText("");
+      fetchData();
+      if (isElectron) window.electronAPI.showNotification("Note Saved", "Your activity has been updated.");
+    } catch (err) {
+      console.error("Save Quick Note Error:", err);
+    }
+  };
+
+  const deleteEvent = async (eventId) => {
     if (!confirm("Are you sure you want to delete this log? It will be removed from future summaries.")) return;
     try {
       await fetch(`${API_BASE}/events/${eventId}`, { method: 'DELETE' });
@@ -239,11 +292,25 @@ const Dashboard = () => {
     }
   };
 
+  const clearDayData = async () => {
+    if (!confirm(`Are you sure you want to delete ALL data for ${activeDate}? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/events/clear-day?date=${activeDate}`, { method: 'POST' });
+      if (res.ok) {
+        fetchData();
+        setReport(null);
+        if (isElectron) window.electronAPI.showNotification("Data Cleared", `All logs for ${activeDate} have been deleted.`);
+      }
+    } catch (err) {
+      console.error("Clear Day Error:", err);
+    }
+  };
+
   const getActivityIcon = (source, label) => {
     if (source === 'logic_tracker') return <Cpu size={16} color="#f59e0b" />;
-    if (source === 'browser') return <Globe size={16} color="#3b82f6" />;
+    if (source === 'browser') return <Globe size={16} color="#2dd4bf" />;
     switch (label) {
-      case 'coding': return <Code size={16} color="#818cf8" />;
+      case 'coding': return <Code size={16} color="#a3e635" />;
       case 'terminal': return <Terminal size={16} color="#94a3b8" />;
       default: return <Activity size={16} color="#64748b" />;
     }
@@ -264,18 +331,30 @@ const Dashboard = () => {
     }
   };
 
+  const toggleLLMServer = async () => {
+    if (!isElectron) return;
+    if (llmServerRunning) {
+      await window.electronAPI.stopLLM();
+    } else {
+      const res = await window.electronAPI.startLLM(appSettings.llmModel || 'ggml-org/gemma-3-1b-it-GGUF');
+      if (res.status === 'error') {
+        alert(`Failed to start LLM Server: ${res.message}`);
+      }
+    }
+  };
+
   return (
     <div className="main-container">
       {/* Native-feeling Drag Header */}
       <header className="native-header">
         <div className="header-title-area">
-          <HardDrive size={14} color="#94a3b8" />
-          <span style={{ fontSize: '13px', fontWeight: '600', color: '#94a3b8' }}>DocMe</span>
+          <img src="./logo.png" alt="DocMe Logo" style={{ width: '20px', height: '20px', borderRadius: '4px' }} />
+          <span style={{ fontSize: '13px', fontWeight: '600', color: '#f1f5f9', marginLeft: '8px' }}>DocMe</span>
         </div>
 
-        <div className="no-drag">
-          <div className="glass-panel" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', borderRadius: '8px' }}>
-            <Calendar size={14} color="#818cf8" />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="glass-panel no-drag" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', borderRadius: '8px' }}>
+            <Calendar size={14} color="#a3e635" />
             <input
               type="date"
               value={activeDate}
@@ -285,7 +364,38 @@ const Dashboard = () => {
           </div>
         </div>
 
-        <div style={{ position: 'absolute', right: '16px' }}>
+        <div style={{ position: 'absolute', right: '16px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="no-drag" style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.05)', padding: '4px 8px', borderRadius: '20px' }}>
+            <span style={{ fontSize: '10px', fontWeight: '600', color: llmServerRunning ? '#a3e635' : '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              LLM {llmServerRunning ? 'Live' : 'Off'}
+            </span>
+            <div
+              onClick={toggleLLMServer}
+              style={{
+                width: '32px',
+                height: '18px',
+                background: llmServerRunning ? 'rgba(163, 230, 53, 0.2)' : 'rgba(255,255,255,0.1)',
+                borderRadius: '10px',
+                position: 'relative',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease',
+                border: llmServerRunning ? '1px solid rgba(163, 230, 53, 0.3)' : '1px solid rgba(255,255,255,0.1)'
+              }}
+            >
+              <div style={{
+                position: 'absolute',
+                top: '2px',
+                left: llmServerRunning ? '16px' : '2px',
+                width: '12px',
+                height: '12px',
+                background: llmServerRunning ? '#a3e635' : '#94a3b8',
+                borderRadius: '50%',
+                transition: 'all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)',
+                boxShadow: llmServerRunning ? '0 0 8px rgba(163, 230, 53, 0.5)' : 'none'
+              }} />
+            </div>
+          </div>
+
           <button onClick={() => setSettingsOpen(true)} className="icon-btn no-drag">
             <Settings size={16} />
           </button>
@@ -346,7 +456,7 @@ const Dashboard = () => {
                         {(() => {
                           try {
                             const p = JSON.parse(event.payload_json);
-                            if (p.ai_summary) return <span className="ai-badge" style={{ fontSize: '11px', padding: '2px 8px' }}>🤖 {p.ai_summary}</span>;
+                            if (p.ai_summary) return <span className="ai-badge" style={{ fontSize: '11px', padding: '2px 8px', color: '#a3e635', background: 'rgba(163, 230, 53, 0.1)' }}>🤖 {p.ai_summary}</span>;
                             if (p.url) return <span className="url">{p.url}</span>;
                           } catch (e) { }
                           return null;
@@ -365,7 +475,7 @@ const Dashboard = () => {
                               if (e.key === 'Escape') setEditingNoteId(null);
                             }}
                             className="glass-panel"
-                            style={{ flex: 1, padding: '6px 10px', fontSize: '13px', background: 'rgba(255,255,255,0.05)', border: '1px solid #818cf8', color: 'white', outline: 'none', borderRadius: '6px' }}
+                            style={{ flex: 1, padding: '6px 10px', fontSize: '13px', background: 'rgba(255,255,255,0.05)', border: '1px solid #a3e635', color: 'white', outline: 'none', borderRadius: '6px' }}
                             placeholder="Add a note..."
                           />
                           <button onClick={() => saveNote(event.id)} className="primary-btn small" style={{ borderRadius: '6px' }}>Save</button>
@@ -406,7 +516,7 @@ const Dashboard = () => {
                     }}
                     title="Add Note"
                   >
-                    <MessageSquare size={18} color={editingNoteId === event.id ? "#818cf8" : (event.note ? "#10b981" : "currentColor")} />
+                    <MessageSquare size={18} color={editingNoteId === event.id ? "#a3e635" : (event.note ? "#2dd4bf" : "currentColor")} />
                   </button>
                 </div>
               </div>
@@ -443,7 +553,7 @@ const Dashboard = () => {
           <div className="glass-panel modal-content" style={{ width: '380px', padding: '24px' }}>
             <div className="flex-between" style={{ marginBottom: '20px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Settings size={18} color="#10b981" />
+                <Settings size={18} color="#2dd4bf" />
                 <span style={{ fontWeight: '600' }}>Settings</span>
               </div>
               <button onClick={() => setSettingsOpen(false)} className="icon-btn"><X size={18} /></button>
@@ -459,7 +569,7 @@ const Dashboard = () => {
               </div>
 
               <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '16px', marginTop: '8px' }}>
-                <p style={{ fontSize: '12px', fontWeight: '600', color: '#818cf8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Intelligence Settings</p>
+                <p style={{ fontSize: '12px', fontWeight: '600', color: '#a3e635', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Intelligence Settings</p>
 
                 <div style={{ marginBottom: '12px' }}>
                   <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>LLM API Key (optional for local)</label>
@@ -483,6 +593,23 @@ const Dashboard = () => {
                   />
                 </div>
               </div>
+
+              <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '16px', marginTop: '8px' }}>
+                <p style={{ fontSize: '12px', fontWeight: '600', color: '#ef4444', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Danger Zone</p>
+                <div className="flex-between">
+                  <div>
+                    <p style={{ fontSize: '13px', fontWeight: '500' }}>Clear Day's Data</p>
+                    <p style={{ fontSize: '11px', color: '#64748b' }}>Delete everything for {activeDate}</p>
+                  </div>
+                  <button
+                    onClick={clearDayData}
+                    className="secondary-btn small"
+                    style={{ borderColor: '#ef4444', color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)' }}
+                  >
+                    <Trash2 size={14} style={{ marginRight: '6px' }} /> Clear {activeDate}
+                  </button>
+                </div>
+              </div>
             </div>
             <button onClick={() => setSettingsOpen(false)} className="primary-btn" style={{ width: '100%', marginTop: '24px', background: '#333' }}>Save & Close</button>
           </div>
@@ -494,7 +621,7 @@ const Dashboard = () => {
           <div className="toast-content" style={{ padding: '20px' }}>
             <div className="flex-between" style={{ marginBottom: '12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <MessageSquare size={16} color="#818cf8" />
+                <MessageSquare size={16} color="#a3e635" />
                 <span style={{ fontWeight: '600', fontSize: '14px' }}>What did you do?</span>
               </div>
               <button onClick={() => { setQuickNoteOpen(false); setTargetEvent(null); }} className="icon-btn"><X size={16} /></button>
@@ -527,7 +654,7 @@ const Dashboard = () => {
       {/* Hover Styles for event items (injected via style tag for simplicity) */}
       <style>{`
         .event-item:hover .icon-btn { opacity: 1 !important; transform: scale(1.2); }
-        .hover-scale:hover { transform: scale(1.2) !important; color: #818cf8 !important; }
+        .hover-scale:hover { transform: scale(1.2) !important; color: #a3e635 !important; }
         .delete-row-btn:hover { color: #ef4444 !important; }
         .custom-scrollbar::-webkit-scrollbar { width: 5px; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }

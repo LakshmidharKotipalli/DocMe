@@ -8,10 +8,11 @@ import yaml
 from loguru import logger
 
 class LogicTracker:
-    def __init__(self, interval_sec=30, record_callback=None, watch_dirs=None):
+    def __init__(self, interval_sec=30, record_callback=None, watch_dirs=None, config_path=None):
         self.interval = interval_sec
         self.record_callback = record_callback
         self.watch_dirs = watch_dirs or [os.getcwd()]
+        self.config_path = config_path or "config/docme.yaml"
         self.running = False
         self.thread = None
         self.file_cache = {} 
@@ -23,7 +24,7 @@ class LogicTracker:
     def _init_llm(self):
         """Initialize LLM client for diff summarization."""
         try:
-            with open("config/docme.yaml", 'r') as f:
+            with open(self.config_path, 'r') as f:
                 config = yaml.safe_load(f)
             
             self.llm_config = config.get('llm', {})
@@ -83,7 +84,7 @@ class LogicTracker:
         """Use LLM to generate a human-readable summary of code changes."""
         # Reload config to pick up UI changes
         try:
-            with open("config/docme.yaml", 'r') as f:
+            with open(self.config_path, 'r') as f:
                 config = yaml.safe_load(f)
             self.llm_config = config.get('llm', {})
             # Only re-init if base_url changed or client is None

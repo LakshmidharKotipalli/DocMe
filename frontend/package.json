@@ -21,7 +21,7 @@
     "productName": "DocMe",
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "public/icon.icns",
+      "icon": "public/icon.png",
       "target": [
         "dmg",
         "zip"
@@ -44,6 +44,10 @@
       {
         "from": "../config",
         "to": "backend/config"
+      },
+      {
+        "from": "../llm",
+        "to": "backend/llm"
       }
     ],
     "directories": {

@@ -20,6 +20,7 @@ yarn-error.log*
 # Electron & Build Artifacts
 dist/
 build/
+Windows/
 release/
 frontend/release/
 macOS/frontend/release/

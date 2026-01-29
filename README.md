@@ -41,13 +41,10 @@ pip install -r requirements.txt
 ```
 
 ### 3. Frontend Setup
-DocMe provides dedicated builds for each platform. Navigate to your platform's directory:
-
-**For macOS:**
 ```bash
-cd macOS/frontend
+cd frontend
 npm install
-cd ../..
+cd ..
 ```
 
 ---
@@ -93,9 +90,9 @@ To create a standalone installer that you can share or install on other computer
 
 **For macOS (.dmg):**
 ```bash
-python3 scripts/build_dist.py macOS
+python3 scripts/build_dist.py
 ```
-*Output:* `macOS/frontend/release/DocMe-1.0.0.dmg`
+*Output:* `frontend/release/DocMe-1.0.0.dmg`
 
 ---
 

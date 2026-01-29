@@ -12,6 +12,7 @@ let tray;
 let popupWindow;
 let backendProcess;
 let agentProcess;
+let llmProcess;
 let isQuitting = false;
 let activityCount = 0;
 
@@ -101,7 +102,7 @@ ipcMain.handle('save-settings', (event, newSettings) => {
     settings = { ...settings, ...newSettings };
 
     // Persist to docme.yaml for the background agent
-    const configPath = path.join(PROJECT_ROOT, 'config', 'docme.yaml');
+    const configPath = WRITABLE_CONFIG_PATH;
     try {
         if (fs.existsSync(configPath)) {
             let configContent = fs.readFileSync(configPath, 'utf8');
@@ -124,7 +125,7 @@ ipcMain.handle('save-settings', (event, newSettings) => {
             }
 
             fs.writeFileSync(configPath, configContent, 'utf8');
-            console.log('Updated docme.yaml with new settings');
+            console.log('Updated WRITABLE config at:', configPath);
         }
     } catch (err) {
         console.error('Failed to update docme.yaml:', err);
@@ -143,10 +144,124 @@ ipcMain.handle('export-report', async () => {
 
 ipcMain.handle('get-version', () => app.getVersion());
 
+ipcMain.handle('get-llm-status', () => {
+    return !!llmProcess;
+});
+
+ipcMain.handle('start-llm', async (event, { model }) => {
+    if (llmProcess) return { status: 'already_running' };
+
+    // Try to find llama-server
+    const possiblePaths = [
+        path.join(RESOURCE_ROOT, 'llm', 'llama-server'),
+        path.join(app.getAppPath(), '..', 'llm', 'llama-server'),
+        '/usr/local/bin/llama-server',
+        '/opt/homebrew/bin/llama-server'
+    ];
+
+    let llmBin = null;
+    for (const p of possiblePaths) {
+        if (fs.existsSync(p)) {
+            llmBin = p;
+            break;
+        }
+    }
+
+    if (!llmBin) {
+        llmBin = 'llama-server';
+    }
+
+    console.log(`Starting LLM Server with: ${llmBin}`);
+
+    // Build arguments
+    const args = ['--port', '8080', '-c', '2048'];
+
+    // If model name looks like a repo (contains / but isn't a path)
+    if (model.includes('/') && !model.startsWith('/') && !model.includes('\\') && !fs.existsSync(model)) {
+        args.push('--hf-repo', model);
+    } else {
+        // Resolve local model path
+        let modelPath = model;
+        if (!model.startsWith('/')) {
+            const possibleModelPaths = [
+                path.join(RESOURCE_ROOT, 'llm', model),
+                path.join(app.getAppPath(), '..', 'llm', model)
+            ];
+            for (const p of possibleModelPaths) {
+                if (fs.existsSync(p)) {
+                    modelPath = p;
+                    break;
+                }
+            }
+        }
+
+        if (!fs.existsSync(modelPath)) {
+            return {
+                status: 'error',
+                message: `Model file not found: ${model}. If you intended to use a Hugging Face repo, use the 'org/repo' format. Otherwise, ensure the GGUF file is in the 'llm' directory.`
+            };
+        }
+        args.push('-m', modelPath);
+    }
+
+    try {
+        console.log(`Spawning: ${llmBin} ${args.join(' ')}`);
+        llmProcess = spawn(llmBin, args, {
+            stdio: 'pipe'
+        });
+
+        llmProcess.stdout.on('data', (data) => console.log(`LLM: ${data}`));
+        llmProcess.stderr.on('data', (data) => console.error(`LLM Error: ${data}`));
+
+        llmProcess.on('exit', () => {
+            console.log('LLM Server stopped');
+            llmProcess = null;
+            mainWindow?.webContents.send('llm-status-changed', false);
+        });
+
+        mainWindow?.webContents.send('llm-status-changed', true);
+        return { status: 'success' };
+    } catch (err) {
+        console.error('Failed to start LLM:', err);
+        return { status: 'error', message: err.message };
+    }
+});
+
+ipcMain.handle('stop-llm', async () => {
+    if (llmProcess) {
+        llmProcess.kill('SIGTERM');
+        llmProcess = null;
+        return { status: 'success' };
+    }
+    return { status: 'not_running' };
+});
+
 const isDev = !app.isPackaged;
-const PROJECT_ROOT = isDev
+const RESOURCE_ROOT = isDev
     ? path.join(__dirname, '..', '..')
     : path.join(process.resourcesPath, 'backend');
+
+const USER_DATA_PATH = app.getPath('userData');
+const CONFIG_DIR = path.join(USER_DATA_PATH, 'config');
+const WRITABLE_CONFIG_PATH = path.join(USER_DATA_PATH, 'docme.yaml'); // Backend looks here too
+
+// Ensure writable config exists
+function ensureConfig() {
+    if (!fs.existsSync(USER_DATA_PATH)) {
+        fs.mkdirSync(USER_DATA_PATH, { recursive: true });
+    }
+
+    if (!fs.existsSync(WRITABLE_CONFIG_PATH)) {
+        const defaultConfigPath = path.join(RESOURCE_ROOT, 'config', 'docme.yaml');
+        if (fs.existsSync(defaultConfigPath)) {
+            console.log('Copying default config to:', WRITABLE_CONFIG_PATH);
+            fs.copyFileSync(defaultConfigPath, WRITABLE_CONFIG_PATH);
+        } else {
+            console.error('Could not find default config at:', defaultConfigPath);
+        }
+    }
+}
+ensureConfig();
 
 // Store for settings
 let settings = {
@@ -155,19 +270,25 @@ let settings = {
     notificationsEnabled: true,
     trackingEnabled: true,
     llmApiKey: '',
-    llmModel: 'gemma3:1b'
+    llmModel: 'ggml-org/gemma-3-1b-it-GGUF'
 };
 
 // Sync settings with docme.yaml on boot
 try {
-    const configPath = path.join(PROJECT_ROOT, 'config', 'docme.yaml');
+    const configPath = WRITABLE_CONFIG_PATH;
     if (fs.existsSync(configPath)) {
         const configContent = fs.readFileSync(configPath, 'utf8');
-        const apiKeyMatch = configContent.match(/api_key:\s*"(.*)"/) || configContent.match(/api_key:\s*'(.*)'/);
-        const modelMatch = configContent.match(/model:\s*"(.*)"/) || configContent.match(/model:\s*'(.*)'/);
+        const apiKeyMatch = configContent.match(/api_key:\s*["']?(.*?)["']?(\s*#|$)/m);
+        const modelMatch = configContent.match(/model:\s*["']?(.*?)["']?(\s*#|$)/m);
 
-        if (apiKeyMatch) settings.llmApiKey = apiKeyMatch[1];
-        if (modelMatch) settings.llmModel = modelMatch[1];
+        if (apiKeyMatch && apiKeyMatch[1]) settings.llmApiKey = apiKeyMatch[1].trim();
+        if (modelMatch && modelMatch[1]) settings.llmModel = modelMatch[1].trim();
+
+        // Auto-migrate old model names to HF repo format
+        if (settings.llmModel === 'gemma3:1b-it' || settings.llmModel === 'gemma3:1b' || settings.llmModel === 'gemma-3-1b-it-q4_k_m.gguf') {
+            console.log(`Migrating old model name '${settings.llmModel}' to HF repo format...`);
+            settings.llmModel = 'ggml-org/gemma-3-1b-it-GGUF';
+        }
     }
 } catch (err) {
     console.error('Failed to sync settings from docme.yaml:', err);
@@ -180,16 +301,32 @@ function toggleWindow() {
     if (mainWindow && mainWindow.isVisible()) {
         mainWindow.hide();
     } else {
-        if (!mainWindow) createWindow();
+        if (!mainWindow) {
+            createWindow();
+        } else {
+            // Only force position if it's the first time or we want to snap it 
+            // Better: only position if it was hidden
+            const trayBounds = tray.getBounds();
+            const windowBounds = mainWindow.getBounds();
 
-        const trayBounds = tray.getBounds();
-        const windowBounds = mainWindow.getBounds();
+            // If it's already visible but lost focus, just focus it
+            // If it was hidden, we calculate position but maybe the user wants it to stay where it was?
+            // Standard tray app behavior: reposition if it's "snapped", but here let's let it persist
+            // unless it's the first time it's shown in this session.
 
-        // Calculate window position relative to tray
-        const x = Math.round(trayBounds.x + (trayBounds.width / 2) - (windowBounds.width / 2));
-        const y = Math.round(trayBounds.y + trayBounds.height + 4);
+            if (!mainWindow.isVisible()) {
+                const x = Math.round(trayBounds.x + (trayBounds.width / 2) - (windowBounds.width / 2));
+                const y = Math.round(trayBounds.y + trayBounds.height + 4);
 
-        mainWindow.setPosition(x, y, false);
+                // Only set position if it hasn't been "moved" (roughly)
+                // For simplicity, we'll just check if it's in the initial state or let user drag freely
+                // A better approach is to reposition ONLY if it was never moved.
+                if (!mainWindow.hasBeenMoved) {
+                    mainWindow.setPosition(x, y, false);
+                }
+            }
+        }
+
         mainWindow.show();
         mainWindow.focus();
     }
@@ -218,8 +355,16 @@ function createWindow() {
         }
     });
 
-    // Make the window look like a system panel
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    mainWindow.hasBeenMoved = false;
+
+    mainWindow.on('move', () => {
+        mainWindow.hasBeenMoved = true;
+    });
+
+    mainWindow.on('resize', () => {
+        mainWindow.hasBeenMoved = true;
+    });
 
     // Load content
     if (isDev) {
@@ -229,8 +374,8 @@ function createWindow() {
     }
 
     mainWindow.once('ready-to-show', () => {
-        // Position relative to tray on first open
-        if (tray) {
+        // Only position if we haven't manually moved it yet
+        if (tray && !mainWindow.hasBeenMoved) {
             const trayBounds = tray.getBounds();
             const windowBounds = mainWindow.getBounds();
             const x = Math.round(trayBounds.x + (trayBounds.width / 2) - (windowBounds.width / 2));
@@ -571,22 +716,68 @@ function quitApp() {
 
 function startServices() {
     if (!isDev) {
-        console.log('Starting backend services from:', PROJECT_ROOT);
+        console.log('Starting backend services from:', RESOURCE_ROOT);
 
-        backendProcess = spawn('python3', ['-m', 'uvicorn', 'backend.api.main:app', '--port', '8000'], {
-            cwd: PROJECT_ROOT,
+        const serviceEnv = {
+            ...process.env,
+            PYTHONPATH: RESOURCE_ROOT
+        };
+
+        backendProcess = spawn('python3', [
+            '-m', 'uvicorn', 'backend.api.main:app',
+            '--port', '8000',
+            '--host', '127.0.0.1' // Explicitly bind to localhost
+        ], {
+            cwd: RESOURCE_ROOT,
+            env: serviceEnv,
             stdio: 'pipe'
         });
 
         agentProcess = spawn('python3', ['agent/main.py'], {
-            cwd: PROJECT_ROOT,
+            cwd: RESOURCE_ROOT,
+            env: serviceEnv,
             stdio: 'pipe'
         });
 
-        backendProcess.stdout.on('data', (data) => console.log(`Backend: ${data}`));
-        backendProcess.stderr.on('data', (data) => console.error(`Backend: ${data}`));
-        agentProcess.stdout.on('data', (data) => console.log(`Agent: ${data}`));
-        agentProcess.stderr.on('data', (data) => console.error(`Agent: ${data}`));
+        backendProcess.stdout.on('data', (data) => {
+            const msg = data.toString();
+            console.log(`[Backend] ${msg}`);
+            if (msg.includes('ERROR') || msg.includes('Exception')) {
+                showNotification('Backend Error', 'Check Console.app logs for details.');
+            }
+        });
+        backendProcess.stderr.on('data', (data) => {
+            console.error(`[Backend Error] ${data.toString()}`);
+        });
+
+        agentProcess.stdout.on('data', (data) => {
+            console.log(`[Agent] ${data.toString()}`);
+        });
+        agentProcess.stderr.on('data', (data) => {
+            console.error(`[Agent Error] ${data.toString()}`);
+        });
+
+        // Process error handlers
+        backendProcess.on('error', (err) => {
+            console.error('[Backend Process Error]', err);
+            showNotification('Backend Failed', `Could not start backend: ${err.message}`);
+        });
+
+        agentProcess.on('error', (err) => {
+            console.error('[Agent Process Error]', err);
+            showNotification('Agent Failed', `Could not start agent: ${err.message}`);
+        });
+
+        backendProcess.on('exit', (code, signal) => {
+            console.error(`[Backend] Exited with code ${code}, signal ${signal}`);
+            if (code !== 0 && code !== null) {
+                showNotification('Backend Stopped', `Exit code: ${code}. App may not function correctly.`);
+            }
+        });
+
+        agentProcess.on('exit', (code, signal) => {
+            console.error(`[Agent] Exited with code ${code}, signal ${signal}`);
+        });
     }
 }
 
@@ -599,6 +790,35 @@ function stopServices() {
         agentProcess.kill('SIGTERM');
         agentProcess = null;
     }
+}
+
+// Health check for backend startup
+async function checkBackendHealth() {
+    const maxAttempts = 30; // 30 seconds max
+    let attempts = 0;
+
+    console.log('[Health Check] Waiting for backend...');
+
+    const checkInterval = setInterval(async () => {
+        attempts++;
+        try {
+            const response = await fetch('http://localhost:8000/events?date=2020-01-01');
+            if (response.ok) {
+                clearInterval(checkInterval);
+                console.log('[Health Check] Backend is ready!');
+                createWindow();
+            }
+        } catch (e) {
+            // Backend not ready yet
+            if (attempts >= maxAttempts) {
+                clearInterval(checkInterval);
+                console.error('[Health Check] Backend failed to start in time');
+                showNotification('Backend Error', 'Backend services did not start. Try restarting the app.');
+                // Still create window so user can see the UI
+                createWindow();
+            }
+        }
+    }, 1000);
 }
 
 // Poll for activity count updates
@@ -631,8 +851,8 @@ app.whenReady().then(() => {
 
     if (!isDev) {
         startServices();
-        // Wait for services to start
-        setTimeout(createWindow, 2000);
+        // Wait for backend to be ready with health checks
+        checkBackendHealth();
     } else {
         createWindow();
     }
