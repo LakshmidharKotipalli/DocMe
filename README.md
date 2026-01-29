@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![DocMe Logo](frontend/public/icon.png)
+<img src="frontend/public/icon.png" alt="DocMe Logo" width="120"/>
 
 **A beautiful, privacy-first activity tracker that runs entirely on your Mac.**
 
