@@ -6,7 +6,6 @@
 
 **A beautiful, privacy-first activity tracker that runs entirely on your Mac.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Platform: macOS](https://img.shields.io/badge/Platform-macOS-blue.svg)](https://www.apple.com/macos/)
 
 [Download Latest Release](https://github.com/LakshmidharKotipalli/DocMe/releases/latest) • [Installation Guide](INSTALL.md) • [Report Issue](https://github.com/LakshmidharKotipalli/DocMe/issues)
