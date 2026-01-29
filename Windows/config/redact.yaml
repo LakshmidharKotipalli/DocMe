@@ -1,0 +1,7 @@
+# Redaction Rules (Regex)
+redaction_patterns:
+  - '(?i)password[:\s]+[^\s]+'
+  - '(?i)secret[:\s]+[^\s]+'
+  - '(?i)api_key[:\s]+[^\s]+'
+  - '\b\d{4}-\d{4}-\d{4}-\d{4}\b' # Credit card-like
+  - '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b' # Email

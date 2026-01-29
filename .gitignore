@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.eggs/
+*.egg-info/
+*.egg
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Electron & Build Artifacts
+dist/
+build/
+release/
+frontend/release/
+macOS/frontend/release/
+Windows/frontend/release/
+macOS/frontend/dist/
+Windows/frontend/dist/
+*.dmg
+*.zip
+*.app
+*.exe
+*.msi
+*.blockmap
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env*
+.venv/
+env/
+venv/
+node_modules/
+**/node_modules/
+
+# Files to keep clean
+.DS_Store
+Thumbs.db
+*.log
+data/
+*.sqlite
+*.db
