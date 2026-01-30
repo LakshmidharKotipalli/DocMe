@@ -51,13 +51,13 @@ llm:
 # Set type to 'postgresql' to use Postgres, or 'sqlite' for local file
 database:
   type: "sqlite" # options: sqlite, postgresql
-  sqlite_path: "data/docme.sqlite"
+  sqlite_path: "" # Leave empty to use platform default (~/Library/Application Support/DocMe/ on macOS)
   postgres:
-    user: "lakshmidharkotipalli"
+    user: "your_username"
     password: ""
     host: "localhost"
     port: 5432
     dbname: "docme"
 
-export_dir: "data/exports"
-db_path: "data/docme.sqlite" # Fallback for legacy code
+export_dir: "" # Leave empty to use platform default
+db_path: "" # Leave empty to use platform default (deprecated, use database.sqlite_path)

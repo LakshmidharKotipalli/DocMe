@@ -12,7 +12,7 @@ class LogicTracker:
         self.interval = interval_sec
         self.record_callback = record_callback
         self.watch_dirs = watch_dirs or [os.getcwd()]
-        self.config_path = config_path or "config/docme.yaml"
+        self.config_path = self._find_config(config_path)
         self.running = False
         self.thread = None
         self.file_cache = {} 
@@ -20,6 +20,33 @@ class LogicTracker:
         self.llm_client = None
         self.llm_config = None
         self._init_llm()
+
+    def _find_config(self, config_path):
+        """Find config file using environment variable and platform defaults."""
+        import sys
+        search_paths = []
+        
+        if config_path and os.path.exists(config_path):
+            return config_path
+        
+        # Check environment variable first (set by Electron)
+        env_config = os.environ.get('DOCME_CONFIG_PATH')
+        if env_config and os.path.exists(env_config):
+            return env_config
+        
+        if sys.platform == "darwin":
+            mac_path = os.path.expanduser("~/Library/Application Support/DocMe/docme.yaml")
+            if os.path.exists(mac_path):
+                return mac_path
+        elif sys.platform == "win32":
+            win_path = os.path.join(os.environ.get("APPDATA", ""), "DocMe", "docme.yaml")
+            if os.path.exists(win_path):
+                return win_path
+        
+        if os.path.exists("config/docme.yaml"):
+            return "config/docme.yaml"
+        
+        return config_path or "config/docme.yaml"
 
     def _init_llm(self):
         """Initialize LLM client for diff summarization."""

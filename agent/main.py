@@ -25,6 +25,11 @@ class DocMeAgent:
         search_paths = []
         if config_path:
             search_paths.append(config_path)
+        
+        # Check environment variable first (set by Electron)
+        env_config = os.environ.get('DOCME_CONFIG_PATH')
+        if env_config and os.path.exists(env_config):
+            search_paths.insert(0, env_config)
             
         if sys.platform == "darwin":
             search_paths.append(os.path.expanduser("~/Library/Application Support/DocMe/docme.yaml"))
@@ -75,7 +80,13 @@ class DocMeAgent:
         # Initialize LogicTracker
         self.logic_interval = self.config.get('logic_tracking_interval_sec', 30)
         watched_dirs = self.config.get('watched_directories', [os.getcwd()])
+        # Expand ~ in watched directories
+        watched_dirs = [os.path.expanduser(d) for d in watched_dirs]
         self.logic_tracker = LogicTracker(self.logic_interval, self.record_event, watch_dirs=watched_dirs, config_path=self.config_path)
+
+        # Log startup info
+        logger.info(f"Config loaded from: {self.config_path}")
+        logger.info(f"Watching directories: {watched_dirs}")
 
         # Setup Database Logger
         self._setup_db_logger()
@@ -150,9 +161,10 @@ class DocMeAgent:
                 logger.debug(f"Failed to notify backend: {e}")
 
             if note:
-                logger.debug(f"Recorded event with note: {source} | {app} | {title} | Note: {note[:50]}...")
+                logger.info(f"Recorded event with note: {source} | {app} | {title}")
             else:
-                logger.debug(f"Recorded event: {source} | {app} | {title}")
+                logger.info(f"Recorded event: {source} | {app} | {title}")
+            print(f"[DocMe] Logged: {app} | {title}")
         except Exception as e:
             logger.error(f"Failed to record event: {e}")
             session.rollback()
@@ -174,9 +186,17 @@ class DocMeAgent:
                 if not app or not title:
                     logger.warning(f"Could not retrieve foreground window info. App: {app}, Title: {title}. Check macOS permissions.")
                 
-                # Redact excluded apps and sensitive keywords
+                # Trusted apps that should never be redacted (terminal apps, code editors, etc.)
+                trusted_apps = ["terminal", "iterm", "iterm2", "warp", "hyper", "alacritty", 
+                                "kitty", "code", "cursor", "visual studio code", "sublime", 
+                                "pycharm", "intellij", "webstorm", "vim", "neovim", "emacs"]
+                
+                app_lower = app.lower() if app else ""
+                is_trusted = any(trusted in app_lower for trusted in trusted_apps)
+                
+                # Redact excluded apps and sensitive keywords (but NOT for trusted apps)
                 is_sensitive = (app in self.excluded_apps or 
-                                any(kw.lower() in title.lower() for kw in self.sensitive_keywords))
+                                (not is_trusted and any(kw.lower() in title.lower() for kw in self.sensitive_keywords)))
                 
                 if is_sensitive:
                     title = "[REDACTED]"

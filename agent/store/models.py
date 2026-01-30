@@ -62,6 +62,11 @@ def get_engine_url(config_path=None):
     if config_path:
         search_paths.append(config_path)
     
+    # Check environment variable first (set by Electron)
+    env_config = os.environ.get('DOCME_CONFIG_PATH')
+    if env_config and os.path.exists(env_config):
+        search_paths.insert(0, env_config)
+    
     # Check standard locations
     if sys.platform == "darwin":
         search_paths.append(os.path.expanduser("~/Library/Application Support/DocMe/docme.yaml"))
@@ -88,18 +93,34 @@ def get_engine_url(config_path=None):
             pg = db_config.get('postgres', {})
             return f"postgresql://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['dbname']}"
         
-        # Default to SQLite
-        default_sqlite = "data/docme.sqlite"
+        # Default to SQLite with proper default paths for each platform
         if sys.platform == "darwin":
             default_sqlite = os.path.expanduser("~/Library/Application Support/DocMe/docme.sqlite")
         elif sys.platform == "win32":
             default_sqlite = os.path.join(os.environ.get("APPDATA", ""), "DocMe", "docme.sqlite")
+        else:
+            default_sqlite = os.path.expanduser("~/.docme/docme.sqlite")
             
-        sqlite_path = db_config.get('sqlite_path', config.get('db_path', default_sqlite))
-        os.makedirs(os.path.dirname(sqlite_path), exist_ok=True)
+        sqlite_path = db_config.get('sqlite_path') or config.get('db_path') or default_sqlite
+        
+        # If path is still empty/relative, use default
+        if not sqlite_path or sqlite_path == "data/docme.sqlite":
+            sqlite_path = default_sqlite
+        
+        # Expand ~ if present in path
+        sqlite_path = os.path.expanduser(sqlite_path)
+        
+        # Ensure parent directory exists
+        parent_dir = os.path.dirname(sqlite_path)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+        
         return f'sqlite:///{sqlite_path}'
-    except:
-        return 'sqlite:///data/docme.sqlite'
+    except Exception as e:
+        # Fallback to user home directory
+        fallback_path = os.path.expanduser("~/.docme/docme.sqlite")
+        os.makedirs(os.path.dirname(fallback_path), exist_ok=True)
+        return f'sqlite:///{fallback_path}'
 
 def init_db(db_path_unused=None):
     url = get_engine_url()

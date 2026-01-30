@@ -62,12 +62,36 @@ class DocMeFileEventHandler(FileSystemEventHandler):
 
 class FileWatcher:
     def __init__(self, config_path=None, record_callback=None):
-        if config_path is None:
-            config_path = "config/docme.yaml"
-        
         import yaml
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        import sys
+        
+        # Find config file using same logic as other components
+        search_paths = []
+        if config_path and os.path.exists(config_path):
+            search_paths.append(config_path)
+        
+        # Check environment variable first (set by Electron)
+        env_config = os.environ.get('DOCME_CONFIG_PATH')
+        if env_config and os.path.exists(env_config):
+            search_paths.insert(0, env_config)
+        
+        if sys.platform == "darwin":
+            search_paths.append(os.path.expanduser("~/Library/Application Support/DocMe/docme.yaml"))
+        elif sys.platform == "win32":
+            search_paths.append(os.path.join(os.environ.get("APPDATA", ""), "DocMe", "docme.yaml"))
+        
+        search_paths.append("config/docme.yaml")
+        
+        self.config = {}
+        for p in search_paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, 'r') as f:
+                        self.config = yaml.safe_load(f)
+                        logger.info(f"FileWatcher loaded config from: {p}")
+                        break
+                except Exception as e:
+                    logger.warning(f"Failed to load config from {p}: {e}")
         
         self.directories = self.config.get('watched_directories', [])
         self.record_callback = record_callback
