@@ -128,8 +128,10 @@ const Dashboard = () => {
   const lastActivityRef = useRef({ app: '', title: '', id: null });
 
   useEffect(() => {
+    // Immediate fetch on mount and date change
     fetchData();
-    const interval = setInterval(fetchData, 10000);
+    // Poll every 5 seconds for faster updates
+    const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, [activeDate]);
 
@@ -159,52 +161,91 @@ const Dashboard = () => {
   }, []);
 
   useEffect(() => {
-    const socket = new WebSocket('ws://localhost:8000/ws');
-    socket.onmessage = (event) => {
+    let socket = null;
+    let reconnectTimer = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 10;
+
+    const connectWebSocket = () => {
       try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'new_event') {
-          // Only pop up if the window/app has actually changed
-          const hasChanged = data.app !== lastActivityRef.current.app ||
-            data.window_title !== lastActivityRef.current.title;
+        socket = new WebSocket('ws://localhost:8000/ws');
 
-          if (hasChanged) {
-            const previous = { ...lastActivityRef.current };
+        socket.onopen = () => {
+          console.log('WebSocket connected');
+          reconnectAttempts = 0;
+        };
 
-            // Update ref with NEW activity data
-            lastActivityRef.current = {
-              id: data.id,
-              app: data.app,
-              title: data.window_title
-            };
+        socket.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'new_event') {
+              // Only pop up if the window/app has actually changed
+              const hasChanged = data.app !== lastActivityRef.current.app ||
+                data.window_title !== lastActivityRef.current.title;
 
-            // Only trigger popup for the activity we just LEFT
-            // and only if it was a real activity (foreground or browser)
-            const isTrackedSource = data.source === 'foreground_window' || data.source === 'browser';
+              if (hasChanged) {
+                const previous = { ...lastActivityRef.current };
 
-            if (previous.app && previous.id && isTrackedSource) {
-              setTimeout(() => {
-                if (isElectron) {
-                  window.electronAPI.createPopupWindow({
-                    id: previous.id,
-                    app: previous.app,
-                    window_title: previous.title
-                  });
+                // Update ref with NEW activity data
+                lastActivityRef.current = {
+                  id: data.id,
+                  app: data.app,
+                  title: data.window_title
+                };
+
+                // Only trigger popup for the activity we just LEFT
+                // and only if it was a real activity (foreground or browser)
+                const isTrackedSource = data.source === 'foreground_window' || data.source === 'browser';
+
+                if (previous.app && previous.id && isTrackedSource) {
+                  setTimeout(() => {
+                    if (isElectron) {
+                      window.electronAPI.createPopupWindow({
+                        id: previous.id,
+                        app: previous.app,
+                        window_title: previous.title
+                      });
+                    }
+                  }, 500);
                 }
-              }, 500);
-            }
 
-            fetchData();
-          } else {
-            // Even if we don't pop up, still refresh data to show logs in dashboard
-            fetchData();
+                fetchData();
+              } else {
+                // Even if we don't pop up, still refresh data to show logs in dashboard
+                fetchData();
+              }
+            }
+          } catch (err) {
+            console.error("WS Message Error:", err);
           }
-        }
+        };
+
+        socket.onerror = (error) => {
+          console.error('WebSocket error:', error);
+        };
+
+        socket.onclose = () => {
+          console.log('WebSocket disconnected');
+          // Attempt to reconnect with exponential backoff
+          if (reconnectAttempts < maxReconnectAttempts) {
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+            reconnectAttempts++;
+            console.log(`Attempting WebSocket reconnect in ${delay}ms (attempt ${reconnectAttempts})`);
+            reconnectTimer = setTimeout(connectWebSocket, delay);
+          }
+        };
       } catch (err) {
-        console.error("WS Message Error:", err);
+        console.error('WebSocket connection failed:', err);
       }
     };
-    return () => socket.close();
+
+    // Initial connection
+    connectWebSocket();
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (socket) socket.close();
+    };
   }, []);
 
   const updateSetting = async (key, value) => {

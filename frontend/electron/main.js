@@ -66,12 +66,18 @@ ipcMain.on('create-popup-window', (event, data) => {
         hasShadow: true,
         focusable: true, // Keep focusable so they can click it if they WANT to type
         show: false, // Don't show immediately
+        skipTaskbar: true, // Don't show in taskbar/dock
+        visibleOnAllWorkspaces: true, // Show on all desktops/spaces
+        level: 'floating', // macOS: floating window level (above normal windows)
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
             preload: path.join(__dirname, 'preload.js')
         }
     });
+
+    // Ensure popup shows on all workspaces (macOS spaces)
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
     popupWindow = win;
 
@@ -131,9 +137,11 @@ ipcMain.handle('save-settings', (event, newSettings) => {
         console.error('Failed to update docme.yaml:', err);
     }
 
-    // Apply certain settings immediately
-    if (settings.showInDock) app.dock.show();
-    else app.dock.hide();
+    // Apply certain settings immediately (macOS only)
+    if (app.dock) {
+        if (settings.showInDock) app.dock.show();
+        else app.dock.hide();
+    }
     updateTrayMenu();
     return settings;
 });
@@ -355,7 +363,7 @@ function createWindow() {
         }
     });
 
-    mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    // Note: Removed setVisibleOnAllWorkspaces to allow proper minimize behavior
     mainWindow.hasBeenMoved = false;
 
     mainWindow.on('move', () => {
@@ -372,6 +380,18 @@ function createWindow() {
     } else {
         mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
     }
+
+    // Log web content errors for debugging
+    mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+        console.log(`[Renderer Console] ${message}`);
+    });
+
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+        console.error(`[Load Failed] ${errorDescription} (${errorCode}) for ${validatedURL}`);
+    });
+
+    // Open DevTools for debugging in production (can be removed later)
+    // mainWindow.webContents.openDevTools({ mode: 'detach' });
 
     mainWindow.once('ready-to-show', () => {
         // Only position if we haven't manually moved it yet
@@ -718,43 +738,138 @@ function startServices() {
     if (!isDev) {
         console.log('Starting backend services from:', RESOURCE_ROOT);
 
+        // Find Python - try common locations based on platform
+        let pythonPaths = [];
+
+        if (process.platform === 'darwin') {
+            // macOS paths
+            pythonPaths = [
+                '/Library/Frameworks/Python.framework/Versions/3.13/bin/python3',
+                '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3',
+                '/Library/Frameworks/Python.framework/Versions/3.11/bin/python3',
+                '/Library/Frameworks/Python.framework/Versions/3.10/bin/python3',
+                '/opt/homebrew/bin/python3',
+                '/usr/local/bin/python3',
+                '/usr/bin/python3',
+                'python3'
+            ];
+        } else if (process.platform === 'win32') {
+            // Windows paths
+            const userHome = process.env.USERPROFILE || '';
+            pythonPaths = [
+                path.join(userHome, 'AppData', 'Local', 'Programs', 'Python', 'Python312', 'python.exe'),
+                path.join(userHome, 'AppData', 'Local', 'Programs', 'Python', 'Python311', 'python.exe'),
+                path.join(userHome, 'AppData', 'Local', 'Programs', 'Python', 'Python310', 'python.exe'),
+                'C:\\Python312\\python.exe',
+                'C:\\Python311\\python.exe',
+                'C:\\Python310\\python.exe',
+                'python'
+            ];
+        } else {
+            // Linux paths
+            pythonPaths = [
+                '/usr/bin/python3',
+                '/usr/local/bin/python3',
+                'python3'
+            ];
+        }
+
+        let pythonPath = process.platform === 'win32' ? 'python' : 'python3';
+        for (const p of pythonPaths) {
+            if (fs.existsSync(p)) {
+                pythonPath = p;
+                console.log('Found Python at:', pythonPath);
+                break;
+            }
+        }
+
+        // Build platform-specific PATH additions
+        let pathAdditions = '';
+        if (process.platform === 'darwin') {
+            pathAdditions = '/usr/local/bin:/opt/homebrew/bin:/usr/bin';
+        } else if (process.platform === 'win32') {
+            const userHome = process.env.USERPROFILE || '';
+            pathAdditions = [
+                path.join(userHome, 'AppData', 'Local', 'Programs', 'Python', 'Python312'),
+                path.join(userHome, 'AppData', 'Local', 'Programs', 'Python', 'Python311'),
+                'C:\\Python312',
+                'C:\\Python311'
+            ].join(';');
+        } else {
+            pathAdditions = '/usr/local/bin:/usr/bin';
+        }
+
+        const pathSeparator = process.platform === 'win32' ? ';' : ':';
+
         const serviceEnv = {
             ...process.env,
-            PYTHONPATH: RESOURCE_ROOT
+            PYTHONPATH: RESOURCE_ROOT,
+            PATH: `${process.env.PATH}${pathSeparator}${pathAdditions}`,
+            // Tell Python where to find config and store data
+            DOCME_CONFIG_PATH: WRITABLE_CONFIG_PATH,
+            DOCME_DATA_PATH: USER_DATA_PATH
         };
 
-        backendProcess = spawn('python3', [
+        // In packaged mode, the structure is:
+        // RESOURCE_ROOT/backend/ (contains api/, etc.)
+        // RESOURCE_ROOT/agent/ (contains main.py, collectors/, etc.)
+        console.log('Starting uvicorn with PYTHONPATH:', RESOURCE_ROOT);
+
+        backendProcess = spawn(pythonPath, [
             '-m', 'uvicorn', 'backend.api.main:app',
             '--port', '8000',
-            '--host', '127.0.0.1' // Explicitly bind to localhost
+            '--host', '127.0.0.1'
         ], {
             cwd: RESOURCE_ROOT,
             env: serviceEnv,
-            stdio: 'pipe'
+            stdio: 'pipe',
+            detached: false,
+            windowsHide: true
         });
 
-        agentProcess = spawn('python3', ['agent/main.py'], {
+        const agentMainPath = path.join(RESOURCE_ROOT, 'agent', 'main.py');
+        console.log('Starting agent from:', agentMainPath);
+
+        agentProcess = spawn(pythonPath, [agentMainPath], {
             cwd: RESOURCE_ROOT,
             env: serviceEnv,
-            stdio: 'pipe'
+            stdio: 'pipe',
+            detached: false,
+            windowsHide: true
         });
 
         backendProcess.stdout.on('data', (data) => {
-            const msg = data.toString();
-            console.log(`[Backend] ${msg}`);
-            if (msg.includes('ERROR') || msg.includes('Exception')) {
-                showNotification('Backend Error', 'Check Console.app logs for details.');
+            try {
+                const msg = data.toString();
+                console.log(`[Backend] ${msg}`);
+                if (msg.includes('ERROR') || msg.includes('Exception')) {
+                    showNotification('Backend Error', 'Check Console.app logs for details.');
+                }
+            } catch (e) {
+                // Ignore EPIPE errors when process exits
             }
         });
         backendProcess.stderr.on('data', (data) => {
-            console.error(`[Backend Error] ${data.toString()}`);
+            try {
+                console.error(`[Backend Error] ${data.toString()}`);
+            } catch (e) {
+                // Ignore EPIPE errors when process exits
+            }
         });
 
         agentProcess.stdout.on('data', (data) => {
-            console.log(`[Agent] ${data.toString()}`);
+            try {
+                console.log(`[Agent] ${data.toString()}`);
+            } catch (e) {
+                // Ignore EPIPE errors when process exits
+            }
         });
         agentProcess.stderr.on('data', (data) => {
-            console.error(`[Agent Error] ${data.toString()}`);
+            try {
+                console.error(`[Agent Error] ${data.toString()}`);
+            } catch (e) {
+                // Ignore EPIPE errors when process exits
+            }
         });
 
         // Process error handlers
@@ -796,26 +911,37 @@ function stopServices() {
 async function checkBackendHealth() {
     const maxAttempts = 30; // 30 seconds max
     let attempts = 0;
+    let windowCreated = false;
 
-    console.log('[Health Check] Waiting for backend...');
+    console.log('[Health Check] Waiting for backend to start...');
 
     const checkInterval = setInterval(async () => {
         attempts++;
         try {
-            const response = await fetch('http://localhost:8000/events?date=2020-01-01');
+            const response = await fetch('http://localhost:8000/health');
             if (response.ok) {
                 clearInterval(checkInterval);
                 console.log('[Health Check] Backend is ready!');
-                createWindow();
+                if (!windowCreated) {
+                    windowCreated = true;
+                    createWindow();
+                }
             }
         } catch (e) {
-            // Backend not ready yet
+            console.log(`[Health Check] Attempt ${attempts}/${maxAttempts} - Backend not ready yet (${e.message})`);
+
+            // Create window after 5 seconds even if backend isn't ready
+            // This allows the user to see the app is loading
+            if (attempts >= 5 && !windowCreated) {
+                windowCreated = true;
+                console.log('[Health Check] Creating window while waiting for backend...');
+                createWindow();
+            }
+
             if (attempts >= maxAttempts) {
                 clearInterval(checkInterval);
-                console.error('[Health Check] Backend failed to start in time');
-                showNotification('Backend Error', 'Backend services did not start. Try restarting the app.');
-                // Still create window so user can see the UI
-                createWindow();
+                console.error('[Health Check] Backend failed to start after 30 seconds');
+                showNotification('Backend Starting Slowly', 'Backend services are still starting. Please wait or restart the app.');
             }
         }
     }, 1000);
@@ -841,8 +967,10 @@ function startActivityPoller() {
 // ==================== APP INITIALIZATION ====================
 
 app.whenReady().then(() => {
-    // Show dock icon always for better visibility
-    app.dock.show();
+    // Show dock icon always for better visibility (macOS only)
+    if (app.dock) {
+        app.dock.show();
+    }
 
     createMenu();
     createTray();
@@ -866,15 +994,20 @@ app.whenReady().then(() => {
 });
 
 app.on('activate', () => {
-    if (mainWindow === null) {
+    if (!mainWindow) {
         createWindow();
     } else {
         mainWindow.show();
+        mainWindow.focus();
     }
 });
 
 app.on('window-all-closed', () => {
-    app.quit();
+    // On macOS, keep running in the tray when all windows are closed
+    // Only quit if the user explicitly quits from the tray menu
+    if (process.platform !== 'darwin') {
+        app.quit();
+    }
 });
 
 app.on('before-quit', () => {
