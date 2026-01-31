@@ -11,11 +11,9 @@ Before running the application, ensure your system has the following:
 1.  **Python 3.11+**: Required for the background activity agent and API.
     - Check with: `python3 --version`
     - [Download Python](https://www.python.org/downloads/)
-2.  **Required Python Packages**:
-    - Open your terminal and run:
-      ```bash
-      pip3 install uvicorn fastapi sqlalchemy psutil pygetwindow pytz loguru pyyaml
-      ```
+2.  **Required Python Packages (Legacy/Dev only)**:
+    - *Note: As of v1.1.0, these are automatically bundled in the DMG! You only need this if running from source.*
+    - If needed: `pip3 install -r requirements.txt`
 3.  **llama-server (Optional but Recommended)**:
     - To use the built-in AI summary toggle, you should have `llama-server` installed.
     - If you use Homebrew: `brew install llama.cpp`
@@ -24,9 +22,16 @@ Before running the application, ensure your system has the following:
 
 ## 🛠 Step 1: Install the Application
 
-1.  Open the `DocMe-1.0.0-arm64.dmg` file you downloaded.
-2.  Drag the **DocMe** icon into your **Applications** folder.
-3.  Launch **DocMe** from your Applications or via Spotlight (`Cmd + Space`).
+### Method A: Command Line (For Developers)
+If you have the source code, you can install the `docme` command globally and use it to set up the app:
+1. Open your terminal in the project root.
+2. Run: `npm install -g .`
+3. Run: `docme install`
+
+### Method B: Manual (Traditional)
+1. Open the `DocMe-1.1.0-arm64.dmg` file.
+2. Drag the **DocMe** icon into your **Applications** folder.
+3. Launch **DocMe** from your Applications or via Spotlight (`Cmd + Space`).
 
 ---
 

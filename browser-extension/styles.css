@@ -1,0 +1,35 @@
+/* DocMe Highlighter - Styles */
+
+@keyframes docmeSlideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes docmeFadeOut {
+  to {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+}
+
+@keyframes docmePopIn {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+#docme-save-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 20px rgba(163, 230, 53, 0.5);
+}

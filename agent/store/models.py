@@ -94,7 +94,10 @@ def get_engine_url(config_path=None):
             return f"postgresql://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['dbname']}"
         
         # Default to SQLite with proper default paths for each platform
-        if sys.platform == "darwin":
+        env_data_path = os.environ.get('DOCME_DATA_PATH')
+        if env_data_path:
+            default_sqlite = os.path.join(env_data_path, "docme.sqlite")
+        elif sys.platform == "darwin":
             default_sqlite = os.path.expanduser("~/Library/Application Support/DocMe/docme.sqlite")
         elif sys.platform == "win32":
             default_sqlite = os.path.join(os.environ.get("APPDATA", ""), "DocMe", "docme.sqlite")
@@ -126,12 +129,17 @@ def init_db(db_path_unused=None):
     url = get_engine_url()
     
     if url.startswith('sqlite'):
-        engine = create_engine(url, connect_args={'timeout': 30, 'check_same_thread': False})
+        # SQLite-specific optimization for multi-process access (Backend + Agent)
+        engine = create_engine(url, connect_args={
+            'timeout': 60, # Increase timeout to avoid 'database is locked' errors
+            'check_same_thread': False
+        })
         @event.listens_for(engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA journal_mode=WAL") # Better concurrency
+            cursor.execute("PRAGMA synchronous=NORMAL") # Faster writes
+            cursor.execute("PRAGMA busy_timeout=60000") # Wait up to 60s for lock
             cursor.close()
     else:
         # Postgres or other

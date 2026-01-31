@@ -1,7 +1,7 @@
 const {
     app, BrowserWindow, Menu, Tray, shell, nativeImage,
     Notification, globalShortcut, dialog, nativeTheme,
-    systemPreferences, powerMonitor, ipcMain, screen
+    systemPreferences, powerMonitor, ipcMain, screen, clipboard
 } = require('electron');
 const path = require('path');
 const { spawn, exec } = require('child_process');
@@ -10,11 +10,22 @@ const fs = require('fs');
 let mainWindow;
 let tray;
 let popupWindow;
+let floatingNoteWindow;
 let backendProcess;
 let agentProcess;
 let llmProcess;
 let isQuitting = false;
 let activityCount = 0;
+let lastClipboardText = clipboard.readText();
+
+// Helper to get YYYY-MM-DD in local time
+function getLocalDateString() {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
 
 // IPC Handlers
 ipcMain.on('minimize-window', () => mainWindow?.minimize());
@@ -44,7 +55,15 @@ ipcMain.on('show-notification-window', () => {
 });
 
 ipcMain.on('create-popup-window', (event, data) => {
-    if (popupWindow) {
+    showPopupWindow(data);
+});
+
+app.on('trigger-clipboard-popup', (data) => {
+    showPopupWindow(data);
+});
+
+function showPopupWindow(data) {
+    if (popupWindow && !popupWindow.isDestroyed()) {
         popupWindow.close();
     }
 
@@ -64,11 +83,11 @@ ipcMain.on('create-popup-window', (event, data) => {
         alwaysOnTop: true,
         transparent: true,
         hasShadow: true,
-        focusable: true, // Keep focusable so they can click it if they WANT to type
-        show: false, // Don't show immediately
-        skipTaskbar: true, // Don't show in taskbar/dock
-        visibleOnAllWorkspaces: true, // Show on all desktops/spaces
-        level: 'floating', // macOS: floating window level (above normal windows)
+        focusable: true,
+        show: false,
+        skipTaskbar: true,
+        visibleOnAllWorkspaces: true,
+        level: 'floating',
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
@@ -76,17 +95,22 @@ ipcMain.on('create-popup-window', (event, data) => {
         }
     });
 
-    // Ensure popup shows on all workspaces (macOS spaces)
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
     popupWindow = win;
 
-    const queryParams = new URLSearchParams({
+    const params = {
         mode: 'popup',
         eventId: data.id,
         app: data.app || '',
         title: data.window_title || ''
-    }).toString();
+    };
+
+    if (data.note) {
+        params.initialNote = data.note;
+    }
+
+    const queryParams = new URLSearchParams(params).toString();
 
     const url = isDev
         ? `http://localhost:5173/?${queryParams}`
@@ -95,13 +119,105 @@ ipcMain.on('create-popup-window', (event, data) => {
     win.loadURL(url);
     win.once('ready-to-show', () => {
         if (win && !win.isDestroyed()) {
-            win.showInactive(); // Show without stealing focus!
+            win.show();
         }
     });
     win.on('closed', () => {
         if (popupWindow === win) popupWindow = null;
     });
+}
+
+// Floating Note Button - System-wide always-on-top mini window
+let floatingNoteExpanded = false;
+
+ipcMain.on('toggle-floating-note', () => {
+    if (floatingNoteWindow && !floatingNoteWindow.isDestroyed()) {
+        floatingNoteExpanded = !floatingNoteExpanded;
+        const primaryDisplay = screen.getPrimaryDisplay();
+        const { width, height } = primaryDisplay.bounds;
+
+        if (floatingNoteExpanded) {
+            floatingNoteWindow.setSize(320, 200);
+            floatingNoteWindow.setPosition(width - 330, height - 210);
+        } else {
+            floatingNoteWindow.setSize(70, 70);
+            floatingNoteWindow.setPosition(width - 80, height - 80);
+        }
+    }
 });
+
+ipcMain.on('save-floating-note', async (event, noteText) => {
+    if (!noteText.trim()) return;
+
+    try {
+        // Get the latest event to attach note to
+        const today = getLocalDateString();
+        const eventsRes = await fetch(`http://localhost:8000/events?date=${today}&limit=1`);
+        const events = await eventsRes.json();
+
+        if (events && events.length > 0) {
+            await fetch(`http://localhost:8000/events/${events[0].id}/note`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ note: noteText })
+            });
+            showNotification('Note Saved', `Added to: ${events[0].app}`);
+        }
+    } catch (err) {
+        console.error('Failed to save floating note:', err);
+    }
+});
+
+function createFloatingNoteWindow() {
+    if (floatingNoteWindow && !floatingNoteWindow.isDestroyed()) {
+        floatingNoteWindow.show();
+        return;
+    }
+
+    const primaryDisplay = screen.getPrimaryDisplay();
+    const { width, height } = primaryDisplay.bounds;
+
+    floatingNoteWindow = new BrowserWindow({
+        width: 70,
+        height: 70,
+        x: width - 80,
+        y: height - 80,
+        frame: false,
+        resizable: false,
+        alwaysOnTop: true,
+        transparent: true,
+        hasShadow: false,
+        focusable: true,
+        skipTaskbar: true,
+        visibleOnAllWorkspaces: true,
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, 'preload.js')
+        }
+    });
+
+    // Higher level for macOS to show over full-screen apps and other spaces
+    floatingNoteWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+    // Extra options for macOS spaces/full-screen support
+    floatingNoteWindow.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+        skipTransformProcessType: true
+    });
+    floatingNoteWindow.setFullScreenable(false);
+
+    const url = isDev
+        ? `http://localhost:5173/?mode=floating`
+        : `file://${path.join(__dirname, '../dist/index.html')}?mode=floating`;
+
+    floatingNoteWindow.loadURL(url);
+    floatingNoteWindow.showInactive();
+
+    floatingNoteWindow.on('closed', () => {
+        floatingNoteWindow = null;
+        floatingNoteExpanded = false;
+    });
+}
 
 ipcMain.handle('get-settings', () => settings);
 ipcMain.handle('save-settings', (event, newSettings) => {
@@ -736,7 +852,10 @@ function quitApp() {
 
 function startServices() {
     if (!isDev) {
-        console.log('Starting backend services from:', RESOURCE_ROOT);
+        console.log('Starting backend services...');
+        console.log('RESOURCE_ROOT:', RESOURCE_ROOT);
+        console.log('WRITABLE_CONFIG_PATH:', WRITABLE_CONFIG_PATH);
+        console.log('USER_DATA_PATH:', USER_DATA_PATH);
 
         // Find Python - try common locations based on platform
         let pythonPaths = [];
@@ -775,11 +894,23 @@ function startServices() {
         }
 
         let pythonPath = process.platform === 'win32' ? 'python' : 'python3';
-        for (const p of pythonPaths) {
-            if (fs.existsSync(p)) {
-                pythonPath = p;
-                console.log('Found Python at:', pythonPath);
-                break;
+
+        // 1. Check if we have a bundled venv (ideal for distribution)
+        const bundledVenv = process.platform === 'win32'
+            ? path.join(process.resourcesPath, 'python_runtime', 'Scripts', 'python.exe')
+            : path.join(process.resourcesPath, 'python_runtime', 'bin', 'python3');
+
+        if (fs.existsSync(bundledVenv)) {
+            pythonPath = bundledVenv;
+            console.log('Using bundled virtual environment:', pythonPath);
+        } else {
+            // 2. Fallback to system python searching
+            for (const p of pythonPaths) {
+                if (fs.existsSync(p)) {
+                    pythonPath = p;
+                    console.log('Found System Python at:', pythonPath);
+                    break;
+                }
             }
         }
 
@@ -799,16 +930,43 @@ function startServices() {
             pathAdditions = '/usr/local/bin:/usr/bin';
         }
 
+        // Build environment
         const pathSeparator = process.platform === 'win32' ? ';' : ':';
+        let envPath = `${process.env.PATH}${pathSeparator}${pathAdditions}`;
+
+        // If using bundled venv, put its bin/Scripts at the front of the PATH
+        if (pythonPath === bundledVenv) {
+            const venvBin = path.dirname(bundledVenv);
+            envPath = `${venvBin}${pathSeparator}${envPath}`;
+        }
 
         const serviceEnv = {
             ...process.env,
             PYTHONPATH: RESOURCE_ROOT,
-            PATH: `${process.env.PATH}${pathSeparator}${pathAdditions}`,
-            // Tell Python where to find config and store data
+            PATH: envPath,
             DOCME_CONFIG_PATH: WRITABLE_CONFIG_PATH,
-            DOCME_DATA_PATH: USER_DATA_PATH
+            DOCME_DATA_PATH: USER_DATA_PATH,
+            PYTHONUNBUFFERED: '1',
+            // Ensure sqlite and other native libs find their dependencies
+            DYLD_LIBRARY_PATH: process.platform === 'darwin' ? `${path.join(process.resourcesPath, 'python_runtime', 'lib')}${pathSeparator}${process.env.DYLD_LIBRARY_PATH || ''}` : undefined
         };
+
+        // 3. Pre-flight check: Verify if dependencies are installed
+        // We do this by trying to import one of our core dependencies
+        exec(`"${pythonPath}" -c "import fastapi, uvicorn, sqlalchemy, loguru, watchdog, psutil"`, { env: serviceEnv }, (err) => {
+            if (err) {
+                console.error('Python dependency check failed:', err.message);
+                showNotification(
+                    'Setup Required',
+                    'DocMe needs some Python libraries. Please see the Installation Guide or run: pip3 install -r requirements.txt'
+                );
+
+                // If it's a critical failure, we should probably stop here or provide more info
+                if (mainWindow) {
+                    mainWindow.webContents.send('backend-error', 'Missing Python dependencies. Please install required packages.');
+                }
+            }
+        });
 
         // In packaged mode, the structure is:
         // RESOURCE_ROOT/backend/ (contains api/, etc.)
@@ -964,6 +1122,46 @@ function startActivityPoller() {
     }, 30000); // Every 30 seconds
 }
 
+function startClipboardWatcher() {
+    setInterval(async () => {
+        const currentText = clipboard.readText();
+        if (currentText && currentText !== lastClipboardText && currentText.trim().length > 0) {
+            lastClipboardText = currentText;
+
+            // Only trigger if it's a "meaningful" length and looks like something the user might want to note
+            // (e.g., > 2 chars to avoid single character selections)
+            if (currentText.trim().length > 2) {
+                console.log(`[Clipboard] New text detected (${currentText.substring(0, 20)}...), triggering popup...`);
+
+                // Delay to allow agent to record the focal point
+                setTimeout(async () => {
+                    try {
+                        const date = getLocalDateString();
+                        const response = await fetch(`http://localhost:8000/events?date=${date}&limit=1`);
+                        const events = await response.json();
+
+                        if (events && events.length > 0) {
+                            const data = events[0];
+                            console.log(`[Clipboard] Attaching note to: ${data.app} | ${data.window_title}`);
+
+                            app.emit('trigger-clipboard-popup', {
+                                id: data.id,
+                                app: data.app,
+                                window_title: data.window_title,
+                                note: currentText
+                            });
+                        } else {
+                            console.warn('[Clipboard] No events found for today to attach note to.');
+                        }
+                    } catch (e) {
+                        console.error('[Clipboard] Failed to fetch latest event:', e);
+                    }
+                }, 800);
+            }
+        }
+    }, 1500); // Check every 1.5s
+}
+
 // ==================== APP INITIALIZATION ====================
 
 app.whenReady().then(() => {
@@ -986,6 +1184,8 @@ app.whenReady().then(() => {
     }
 
     startActivityPoller();
+    createFloatingNoteWindow();
+    startClipboardWatcher();
 
     // Show startup notification
     setTimeout(() => {
