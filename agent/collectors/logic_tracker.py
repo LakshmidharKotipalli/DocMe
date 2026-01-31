@@ -71,18 +71,30 @@ class LogicTracker:
         diffs = []
         changed_files = []
         
+        max_depth = 4 # Safety limit for traversing user directories
         for d in self.watch_dirs:
             path = os.path.expanduser(d)
             if not os.path.exists(path): continue
             
+            base_depth = path.count(os.sep)
             for root, dirs, files in os.walk(path):
+                # Apply depth limit
+                current_depth = root.count(os.sep)
+                if current_depth - base_depth >= max_depth:
+                    dirs[:] = [] # Skip subdirectories
+                    continue
+
                 # Skip noise
-                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in {'node_modules', '__pycache__', 'data', '.venv', 'dist', 'build', 'release', 'electron'}]
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in {'node_modules', '__pycache__', 'data', '.venv', 'dist', 'build', 'release', 'electron', 'Library', 'Applications'}]
                 
                 for file in files:
                     if any(file.endswith(ext) for ext in self.code_extensions):
                         full_path = os.path.join(root, file)
                         try:
+                            # Skip very large files to avoid memory spikes (max 500KB)
+                            if os.path.getsize(full_path) > 500 * 1024:
+                                continue
+
                             with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
                                 current_content = f.read()
                             

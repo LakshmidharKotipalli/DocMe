@@ -1,3 +1,38 @@
+# Release Notes - DocMe v1.1.0
+
+## 🆕 New Features
+
+### 📊 Visual Analytics Dashboard
+- **Activity Overview Chart**: Donut chart showing time distribution across categories (Coding, Browsing, Communication, etc.)
+- **Daily Trend Chart**: Bar chart visualizing your productivity throughout the day
+- **Top Apps Panel**: Ranked list of your most-used applications with duration bars
+
+### 🔍 Search & Filtering
+- **Smart Search**: Filter activity logs by app name, window title, or notes
+- **Real-time Filtering**: Instant results as you type
+
+### 📝 Enhanced Note-Taking
+- **Persistent Mini-Note Widget**: Floating button to quickly add notes anytime
+- **Extended Popup Timer**: Notes popup now stays for 5 seconds (up from 3)
+- **Keep Alive on Typing**: Popup won't auto-close while you're writing
+
+### 📥 Report Export
+- **Download Reports**: One-click download of daily reports as Markdown files
+
+### 🧠 AI Integration
+- **Extended AI App Tracking**: Special context capture for ChatGPT, Claude, Cursor, Copilot, Gemini, Comet, and Perplexity
+- **Improved Prompts**: Better structured LLM prompts for clearer, bullet-point summaries
+
+### 🌐 Browser Extension (DocMe Highlighter)
+- **Save Highlights**: Select text on any webpage and save it to DocMe notes
+- **Context Menu**: Right-click to save selected text
+- **Visual Feedback**: Toast notifications confirm saves
+
+### 🔒 Privacy Improvements
+- **DocMe Self-Exclusion**: The app no longer logs its own activity
+
+---
+
 # Release Notes - DocMe v1.0.0
 
 ## 🎉 What's New

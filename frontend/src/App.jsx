@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Activity, Calendar, Code, Cpu, Globe, HardDrive,
-  MessageSquare, Terminal, X, FileText, List, Download, Settings, RefreshCw, Trash2
+  MessageSquare, Terminal, X, FileText, List, Download, Settings, RefreshCw, Trash2, PieChart as PieChartIcon, BarChart3, Edit3, Minimize2, Maximize2, ArrowUp, ArrowDown
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+// Recharts removed as Stats tab is gone
 
 const API_BASE = "http://localhost:8000";
 const isElectron = window.electronAPI?.isElectron || false;
@@ -19,7 +20,11 @@ const PopupNote = () => {
 
   useEffect(() => {
     if (eventId) {
-      // Removed automatic focus to avoid stealing window focus
+      const initialNote = params.get('initialNote');
+      if (initialNote) {
+        setNoteText(`[Copied] ${initialNote}`);
+        setUserResponded(true); // Don't auto-close if we have content
+      }
 
       const app = params.get('app');
       const title = params.get('title');
@@ -31,7 +36,7 @@ const PopupNote = () => {
     if (eventId && !userResponded) {
       const timer = setTimeout(() => {
         if (isElectron) window.electronAPI.closeWindow();
-      }, 3000);
+      }, 5000);
       return () => clearTimeout(timer);
     }
   }, [eventId, userResponded]);
@@ -108,8 +113,10 @@ const Dashboard = () => {
   const [activeDate, setActiveDate] = useState(getLocalDate());
   const [sessions, setSessions] = useState([]);
   const [events, setEvents] = useState([]);
+  const [searchQuery, setSearchQuery] = useState("");
   const [report, setReport] = useState(null);
   const [editingNoteId, setEditingNoteId] = useState(null);
+  const [reverseSort, setReverseSort] = useState(false); // Default: latest on top
   const [noteText, setNoteText] = useState("");
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -124,6 +131,11 @@ const Dashboard = () => {
   });
   const [llmServerRunning, setLlmServerRunning] = useState(false);
   const [targetEvent, setTargetEvent] = useState(null);
+  const [miniNoteOpen, setMiniNoteOpen] = useState(false);
+  const [miniNoteText, setMiniNoteText] = useState("");
+  const [backendError, setBackendError] = useState(null);
+  const [viewingLogs, setViewingLogs] = useState(false);
+  const [systemLogs, setSystemLogs] = useState([]);
   const quickNoteRef = useRef(null);
   const lastActivityRef = useRef({ app: '', title: '', id: null });
 
@@ -157,6 +169,13 @@ const Dashboard = () => {
       });
       window.electronAPI.getLLMStatus().then(status => setLlmServerRunning(status));
       window.electronAPI.onLLMStatusChanged((status) => setLlmServerRunning(status));
+
+      if (window.electronAPI.onBackendError) {
+        window.electronAPI.onBackendError((msg) => {
+          setBackendError(msg);
+          setLoading(false);
+        });
+      }
     }
   }, []);
 
@@ -286,6 +305,19 @@ const Dashboard = () => {
     }
   };
 
+  const fetchLogs = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/logs?limit=50`);
+      if (res.ok) {
+        const data = await res.json();
+        setSystemLogs(data);
+        setViewingLogs(true);
+      }
+    } catch (err) {
+      console.error("Fetch Logs Error:", err);
+    }
+  };
+
   const saveNote = async (eventId) => {
     try {
       await fetch(`${API_BASE}/events/${eventId}/note`, {
@@ -320,6 +352,25 @@ const Dashboard = () => {
       if (isElectron) window.electronAPI.showNotification("Note Saved", "Your activity has been updated.");
     } catch (err) {
       console.error("Save Quick Note Error:", err);
+    }
+  };
+
+  const saveMiniNote = async () => {
+    const eventId = events[0]?.id;
+    if (!eventId || !miniNoteText.trim()) {
+      return;
+    }
+    try {
+      await fetch(`${API_BASE}/events/${eventId}/note`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: miniNoteText })
+      });
+      setMiniNoteText("");
+      fetchData();
+      if (isElectron) window.electronAPI.showNotification("Note Saved", `Note added to: ${events[0]?.app}`);
+    } catch (err) {
+      console.error("Save Mini Note Error:", err);
     }
   };
 
@@ -383,6 +434,25 @@ const Dashboard = () => {
       }
     }
   };
+
+  const filteredEvents = useMemo(() => {
+    let result = [...events];
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter(e =>
+        (e.app?.toLowerCase().includes(query)) ||
+        (e.window_title?.toLowerCase().includes(query)) ||
+        (e.note?.toLowerCase().includes(query))
+      );
+    }
+
+    // fetchData already reverses the order (default: latest first)
+    // If reverseSort is true, we want oldest first (un-reverse the reversed array)
+    if (reverseSort) {
+      return result.reverse();
+    }
+    return result;
+  }, [events, searchQuery, reverseSort]);
 
   return (
     <div className="main-container">
@@ -462,7 +532,30 @@ const Dashboard = () => {
           </button>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          {activeTab === 'logs' && (
+            <>
+              <button
+                onClick={() => setReverseSort(!reverseSort)}
+                className="secondary-btn small"
+                title={reverseSort ? "Oldest First" : "Latest First"}
+                style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                {reverseSort ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
+                Sort
+              </button>
+              <div className="glass-panel" style={{ padding: '4px 12px', display: 'flex', alignItems: 'center', gap: '8px', borderRadius: '8px' }}>
+                <input
+                  type="text"
+                  placeholder="Search logs..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={{ background: 'transparent', border: 'none', color: 'white', outline: 'none', fontSize: '12px', width: '150px' }}
+                />
+                <X size={14} style={{ cursor: 'pointer', opacity: searchQuery ? 0.5 : 0 }} onClick={() => setSearchQuery("")} />
+              </div>
+            </>
+          )}
           <button
             onClick={generateReport}
             disabled={generating}
@@ -478,7 +571,7 @@ const Dashboard = () => {
       <main style={{ flex: 1, overflowY: 'auto', padding: '20px' }} className="custom-scrollbar">
         {activeTab === 'logs' ? (
           <div className="event-list">
-            {events.length > 0 ? events.map((event, i) => (
+            {filteredEvents.length > 0 ? filteredEvents.map((event, i) => (
               <div key={i} className="event-row-container" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
                 <div className="event-item" style={{ flex: 1, border: '1px solid rgba(255,255,255,0.03)', position: 'relative' }}>
                   <div style={{ display: 'flex', gap: '12px', width: '100%' }}>
@@ -571,8 +664,27 @@ const Dashboard = () => {
         ) : (
           <div className="report-container">
             {report ? (
-              <div className="markdown-content">
-                <ReactMarkdown>{report.report_md}</ReactMarkdown>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px', gap: '10px' }}>
+                  <button
+                    onClick={() => {
+                      const blob = new Blob([report.report_md], { type: 'text/markdown' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `DocMe-Report-${activeDate}.md`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="secondary-btn small"
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <Download size={14} /> Download MD
+                  </button>
+                </div>
+                <div className="markdown-content">
+                  <ReactMarkdown>{report.report_md}</ReactMarkdown>
+                </div>
               </div>
             ) : (
               <div className="empty-state" style={{ minHeight: '300px' }}>
@@ -587,6 +699,87 @@ const Dashboard = () => {
           </div>
         )}
       </main>
+
+      {/* Persistent Mini-Note Widget */}
+      <div
+        style={{
+          position: 'fixed',
+          bottom: '20px',
+          right: '20px',
+          zIndex: 100,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: '8px'
+        }}
+      >
+        {miniNoteOpen && (
+          <div
+            className="glass-panel"
+            style={{
+              width: '300px',
+              padding: '16px',
+              borderRadius: '12px',
+              border: '1px solid rgba(163, 230, 53, 0.2)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.3)'
+            }}
+          >
+            <div className="flex-between" style={{ marginBottom: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Edit3 size={14} color="#a3e635" />
+                <span style={{ fontSize: '12px', fontWeight: '600', color: '#a3e635' }}>Quick Note</span>
+              </div>
+              <button onClick={() => setMiniNoteOpen(false)} className="icon-btn" style={{ padding: '4px' }}>
+                <Minimize2 size={14} />
+              </button>
+            </div>
+            <p style={{ fontSize: '10px', color: '#64748b', marginBottom: '8px' }}>
+              Current: {events[0]?.app || 'No activity'} {events[0]?.window_title ? `- ${events[0].window_title.slice(0, 30)}...` : ''}
+            </p>
+            <textarea
+              value={miniNoteText}
+              onChange={(e) => setMiniNoteText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveMiniNote(); }
+              }}
+              placeholder="What are you working on?"
+              style={{
+                width: '100%',
+                minHeight: '60px',
+                background: 'rgba(0,0,0,0.2)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '8px',
+                padding: '10px',
+                color: 'white',
+                fontSize: '12px',
+                resize: 'none',
+                outline: 'none'
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+              <button onClick={saveMiniNote} className="primary-btn small" style={{ fontSize: '11px', padding: '6px 14px' }}>
+                Save Note
+              </button>
+            </div>
+          </div>
+        )}
+        <button
+          onClick={() => setMiniNoteOpen(!miniNoteOpen)}
+          className="primary-btn"
+          style={{
+            width: '48px',
+            height: '48px',
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 4px 20px rgba(163, 230, 53, 0.3)',
+            padding: 0
+          }}
+        >
+          {miniNoteOpen ? <X size={20} /> : <Edit3 size={20} />}
+        </button>
+      </div>
 
       {/* MODALS */}
       {settingsOpen && (
@@ -651,6 +844,31 @@ const Dashboard = () => {
                   </button>
                 </div>
               </div>
+
+              <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '16px', marginTop: '8px' }}>
+                <p style={{ fontSize: '12px', fontWeight: '600', color: '#64748b', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Support</p>
+                <button
+                  onClick={fetchLogs}
+                  className="secondary-btn small"
+                  style={{ width: '100%', justifyContent: 'center', gap: '8px' }}
+                >
+                  <Terminal size={14} /> View System Diagnostics
+                </button>
+              </div>
+
+              {viewingLogs && (
+                <div className="glass-panel" style={{ marginTop: '16px', maxHeight: '200px', overflowY: 'auto', padding: '10px', background: 'rgba(0,0,0,0.4)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                  <div className="flex-between" style={{ marginBottom: '8px' }}>
+                    <span style={{ fontSize: '10px', color: '#a3e635' }}>System Logs (Last 50)</span>
+                    <button onClick={() => setViewingLogs(false)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '10px' }}>Close</button>
+                  </div>
+                  {systemLogs.length > 0 ? systemLogs.map((log, idx) => (
+                    <div key={idx} style={{ fontSize: '10px', color: log.level === 'ERROR' ? '#f87171' : '#cbd5e1', marginBottom: '4px', fontFamily: 'monospace', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '2px' }}>
+                      <span style={{ opacity: 0.5 }}>[{new Date(log.ts).toLocaleTimeString()}]</span> {log.message}
+                    </div>
+                  )) : <p style={{ fontSize: '10px', color: '#64748b' }}>No logs found.</p>}
+                </div>
+              )}
             </div>
             <button onClick={() => setSettingsOpen(false)} className="primary-btn" style={{ width: '100%', marginTop: '24px', background: '#333' }}>Save & Close</button>
           </div>
@@ -707,12 +925,108 @@ const Dashboard = () => {
   );
 };
 
+const FloatingNoteWidget = () => {
+  const [expanded, setExpanded] = useState(false);
+  const [noteText, setNoteText] = useState("");
+
+  const toggleExpanded = () => {
+    setExpanded(!expanded);
+    if (window.electronAPI) window.electronAPI.toggleFloatingNote();
+  };
+
+  const saveNote = () => {
+    if (!noteText.trim()) return;
+    if (window.electronAPI) window.electronAPI.saveFloatingNote(noteText);
+    setNoteText("");
+    toggleExpanded();
+  };
+
+  return (
+    <div style={{
+      width: '100%',
+      height: '100%',
+      display: 'flex',
+      flexDirection: 'column',
+      justifyContent: 'flex-end',
+      alignItems: 'flex-end',
+      background: 'transparent'
+    }}>
+      {expanded && (
+        <div className="glass-panel" style={{
+          width: '300px',
+          height: '180px',
+          padding: '16px',
+          marginBottom: '8px',
+          borderRadius: '12px',
+          border: '1px solid rgba(163, 230, 53, 0.2)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px'
+        }}>
+          <div className="flex-between">
+            <span style={{ fontSize: '12px', fontWeight: '600', color: '#a3e635' }}>Write a Note</span>
+            <button onClick={toggleExpanded} className="icon-btn"><Minimize2 size={14} /></button>
+          </div>
+          <textarea
+            value={noteText}
+            onChange={(e) => setNoteText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveNote(); }
+              if (e.key === 'Escape') toggleExpanded();
+            }}
+            placeholder="About current window..."
+            autoFocus
+            style={{
+              flex: 1,
+              background: 'rgba(0,0,0,0.2)',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '10px',
+              color: 'white',
+              fontSize: '12px',
+              resize: 'none',
+              outline: 'none'
+            }}
+          />
+          <div className="flex-end">
+            <button onClick={saveNote} className="primary-btn small">Save</button>
+          </div>
+        </div>
+      )}
+      <button
+        onClick={toggleExpanded}
+        className="primary-btn"
+        style={{
+          width: '48px',
+          height: '48px',
+          borderRadius: '24px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxShadow: '0 4px 15px rgba(0,0,0,0.3)',
+          padding: 0
+        }}
+      >
+        {expanded ? <X size={20} /> : <Edit3 size={20} />}
+      </button>
+
+      <style>{`
+        body { background: transparent !important; overflow: hidden; }
+        .electron-app { padding-top: 0 !important; }
+      `}</style>
+    </div>
+  );
+};
+
 const App = () => {
   const params = new URLSearchParams(window.location.search);
   const mode = params.get('mode');
 
   if (mode === 'popup') {
     return <PopupNote />;
+  }
+  if (mode === 'floating') {
+    return <FloatingNoteWidget />;
   }
   return <Dashboard />;
 };

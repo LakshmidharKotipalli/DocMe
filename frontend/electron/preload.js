@@ -36,7 +36,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startLLM: (model) => ipcRenderer.invoke('start-llm', { model }),
   stopLLM: () => ipcRenderer.invoke('stop-llm'),
   getLLMStatus: () => ipcRenderer.invoke('get-llm-status'),
-  onLLMStatusChanged: (callback) => ipcRenderer.on('llm-status-changed', (event, status) => callback(status))
+  onLLMStatusChanged: (callback) => ipcRenderer.on('llm-status-changed', (event, status) => callback(status)),
+
+  // Floating Note Controls
+  toggleFloatingNote: () => ipcRenderer.send('toggle-floating-note'),
+  saveFloatingNote: (note) => ipcRenderer.send('save-floating-note', note),
+
+  // Error handling
+  onBackendError: (callback) => ipcRenderer.on('backend-error', (event, msg) => callback(msg))
 });
 
 // Add custom CSS for native feel

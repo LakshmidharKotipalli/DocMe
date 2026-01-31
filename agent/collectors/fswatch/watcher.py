@@ -29,11 +29,13 @@ class DocMeFileEventHandler(FileSystemEventHandler):
 
     def _is_ignored(self, path):
         return any(pattern in path for pattern in self.ignore_patterns)
-
     def _get_hash(self, path):
         try:
             if not os.path.exists(path) or os.path.isdir(path):
                 return None
+            # Skip very large files (max 1MB) to avoid memory spikes
+            if os.path.getsize(path) > 1 * 1024 * 1024:
+                return f"large_file_{os.path.getmtime(path)}"
             with open(path, "rb") as f:
                 return hashlib.md5(f.read()).hexdigest()
         except:

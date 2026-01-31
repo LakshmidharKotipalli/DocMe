@@ -234,3 +234,43 @@ def get_logs(limit: int = 100):
         return logs
     finally:
         db.close()
+
+@app.get("/stats")
+def get_stats(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    db = SessionLocal()
+    try:
+        start = datetime.strptime(date, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        sessions = db.query(DbSession).filter(DbSession.start_ts >= start, DbSession.start_ts <= end).all()
+        
+        # Aggregate by activity label
+        activity_dist = {}
+        for s in sessions:
+            label = s.activity_label or "other"
+            activity_dist[label] = activity_dist.get(label, 0) + s.duration_sec
+            
+        # Aggregate by app (top 5)
+        app_dist = {}
+        for s in sessions:
+            if s.activity_label != 'idle':
+                app_dist[s.primary_app] = app_dist.get(s.primary_app, 0) + s.duration_sec
+        
+        sorted_apps = sorted(app_dist.items(), key=lambda x: x[1], reverse=True)[:5]
+        
+        # Activity by hour
+        hourly_activity = [0] * 24
+        for s in sessions:
+            if s.activity_label != 'idle':
+                hour = s.start_ts.hour
+                # Simplified: add events to the start hour
+                # For better accuracy, we could split duration across hours
+                hourly_activity[hour] += 1
+                
+        return {
+            "activity_distribution": activity_dist,
+            "top_apps": dict(sorted_apps),
+            "hourly_activity": [{"hour": i, "count": count} for i, count in enumerate(hourly_activity)]
+        }
+    finally:
+        db.close()

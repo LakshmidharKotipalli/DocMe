@@ -1,0 +1,14 @@
+{
+    "name": "docme-cli",
+    "version": "1.1.0",
+    "description": "CLI for DocMe Activity Tracker",
+    "main": "index.js",
+    "bin": {
+        "docme": "./scripts/cli.js"
+    },
+    "scripts": {
+        "install-app": "./scripts/install_macos.sh"
+    },
+    "author": "DocMe",
+    "license": "MIT"
+}

@@ -57,11 +57,17 @@ class DocMeAgent:
         self.db_path = self.config.get('db_path', 'data/docme.sqlite')
         self.SessionLocal = init_db(self.db_path)
         
-        self.polling_interval = self.config.get('polling_interval_sec', 1.5)
+        self.polling_interval = self.config.get('polling_interval_sec', 0.8) # Faster polling
         self.heartbeat_interval = self.config.get('heartbeat_interval_sec', 60.0)
         self.idle_threshold = self.config.get('idle_threshold_sec', 180.0)
         self.excluded_apps = self.config.get('excluded_apps', [])
+        if not isinstance(self.excluded_apps, list):
+            self.excluded_apps = []
+        # Pre-process excluded apps for faster check
+        self._excluded_list = [str(x).lower().strip() for x in self.excluded_apps]
+        
         self.sensitive_keywords = self.config.get('sensitive_keywords', [])
+        self.ai_apps = self.config.get('ai_apps', ['ChatGPT', 'Claude', 'Cursor', 'Copilot', 'Gemini', 'Comet', 'Perplexity'])
         
         # Periodic report generation (default: every 30 minutes)
         self.auto_report_interval = self.config.get('auto_report_interval_min', 30) * 60
@@ -194,9 +200,13 @@ class DocMeAgent:
                 app_lower = app.lower() if app else ""
                 is_trusted = any(trusted in app_lower for trusted in trusted_apps)
                 
-                # Redact excluded apps and sensitive keywords (but NOT for trusted apps)
-                is_sensitive = (app in self.excluded_apps or 
-                                (not is_trusted and any(kw.lower() in title.lower() for kw in self.sensitive_keywords)))
+                # Check for completely excluded apps (DocMe, System apps etc)
+                if any(excl in app_lower for excl in self._excluded_list):
+                    time.sleep(self.polling_interval)
+                    continue
+
+                # Redact sensitive keywords (but NOT for trusted apps)
+                is_sensitive = not is_trusted and any(kw.lower() in title.lower() for kw in self.sensitive_keywords)
                 
                 if is_sensitive:
                     title = "[REDACTED]"
@@ -205,15 +215,31 @@ class DocMeAgent:
                 url = None
                 payload = None
                 source = "foreground_window"
+                
+                # Check if this is an AI application for extended tracking
+                is_ai_app = any(ai.lower() in app_lower for ai in self.ai_apps)
+                if is_ai_app:
+                    source = "ai_assistant"
+                    # Capture extended context from AI apps (window title often contains conversation topic)
+                    payload = {
+                        "ai_app": app,
+                        "context": title,
+                        "extended_tracking": True
+                    }
+                
                 if not current_idle:
                     if sys.platform == "darwin" and is_browser_macos(app):
                         source = "browser"
                         url = get_browser_url_macos(app)
-                        if url: payload = {"url": url}
+                        if url: 
+                            payload = payload or {}
+                            payload["url"] = url
                     elif sys.platform == "win32" and is_browser_windows(app):
                         source = "browser"
                         url = get_browser_url_windows(app)
-                        if url: payload = {"url": url}
+                        if url: 
+                            payload = payload or {}
+                            payload["url"] = url
                 elif current_idle:
                     source = "idle"
 

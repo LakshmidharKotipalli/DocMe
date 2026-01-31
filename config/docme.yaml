@@ -1,5 +1,5 @@
 # DocMe Main Configuration
-polling_interval_sec: 1.5
+polling_interval_sec: 0.7
 heartbeat_interval_sec: 600.0 # 10 minutes
 idle_threshold_sec: 300.0 # 5 minutes
 
@@ -16,6 +16,20 @@ excluded_apps:
   - "Wallet"
   - "Authy"
   - "Security"
+  - "DocMe"
+  - "Electron"
+  - "frontend"
+  - "WindowManager"
+
+# AI Applications - capture extended context from these apps
+ai_apps:
+  - "ChatGPT"
+  - "Claude"
+  - "Cursor"
+  - "Copilot"
+  - "Gemini"
+  - "Comet"
+  - "Perplexity"
 
 sensitive_keywords:
   - "incognito"

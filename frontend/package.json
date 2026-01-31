@@ -1,7 +1,7 @@
 {
   "name": "docme",
   "productName": "DocMe",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Privacy-first local activity tracker & daily report generator",
   "author": "DocMe",
   "license": "MIT",
@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "npm run build && electron-builder",
+    "dist:prepare": "rm -rf python_runtime && python3 -m venv --copies python_runtime && ./python_runtime/bin/pip install --upgrade pip && ./python_runtime/bin/pip install -r ../requirements.txt && find python_runtime -name '__pycache__' -type d -exec rm -rf {} + && find python_runtime -name '*.pyc' -delete && find python_runtime -name 'tests' -type d -exec rm -rf {} +",
+    "electron:build": "npm run build && npm run dist:prepare && electron-builder",
     "electron:start": "electron ."
   },
   "build": {
@@ -48,6 +49,10 @@
       {
         "from": "../llm",
         "to": "backend/llm"
+      },
+      {
+        "from": "python_runtime",
+        "to": "python_runtime"
       }
     ],
     "directories": {
