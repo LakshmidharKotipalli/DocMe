@@ -50,10 +50,6 @@ ipcMain.on('focus-window', () => {
     }
 });
 
-ipcMain.on('show-notification-window', () => {
-    // This was the old way, keeping for compatibility or removing if unused
-});
-
 ipcMain.on('create-popup-window', (event, data) => {
     showPopupWindow(data);
 });
@@ -647,6 +643,38 @@ function showNotification(title, body) {
 
 // ==================== DATA EXPORT ====================
 
+/**
+ * Validate file path to prevent path traversal attacks.
+ * Ensures the file will be written to a safe location.
+ */
+function validateFilePath(filePath) {
+    // Resolve to absolute path
+    const absolutePath = path.resolve(filePath);
+
+    // Get allowed directories (downloads, desktop, documents)
+    const homeDir = path.resolve(app.getPath('home'));
+    const downloadsDir = path.resolve(app.getPath('downloads'));
+    const desktopDir = path.resolve(app.getPath('desktop'));
+    const documentsDir = path.resolve(app.getPath('documents'));
+
+    // Check if the file path is within allowed directories
+    const allowedDirs = [homeDir, downloadsDir, desktopDir, documentsDir];
+    const isInAllowedDir = allowedDirs.some(allowedDir =>
+        absolutePath.startsWith(allowedDir + path.sep) || absolutePath === allowedDir
+    );
+
+    if (!isInAllowedDir) {
+        throw new Error('File path is outside of allowed directories');
+    }
+
+    // Check for path traversal attempts
+    if (absolutePath.includes('..') || absolutePath.includes('~')) {
+        throw new Error('File path contains invalid characters');
+    }
+
+    return absolutePath;
+}
+
 async function exportData() {
     const date = new Date().toISOString().split('T')[0];
 
@@ -662,22 +690,41 @@ async function exportData() {
     if (!filePath) return;
 
     try {
-        const response = await fetch(`http://localhost:8000/reports?date=${date}`);
+        // Validate the file path to prevent path traversal
+        const validatedPath = validateFilePath(filePath);
+
+        // Get API key from environment if available
+        const headers = { 'Content-Type': 'application/json' };
+        const apiKey = process.env.DOCME_API_KEY;
+        if (apiKey) {
+            headers['X-API-Key'] = apiKey;
+        }
+
+        const response = await fetch(`http://localhost:8000/reports?date=${date}`, {
+            headers
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
         const data = await response.json();
 
         if (data && data.length > 0) {
-            const content = filePath.endsWith('.json')
+            const content = validatedPath.endsWith('.json')
                 ? JSON.stringify(data[0], null, 2)
                 : data[0].report_md;
 
-            fs.writeFileSync(filePath, content);
-            showNotification('Export Complete', `Report saved to ${path.basename(filePath)}`);
-            shell.showItemInFolder(filePath);
+            // Use validated path
+            fs.writeFileSync(validatedPath, content, { mode: 0o600 }); // Set file permissions to owner-only
+            showNotification('Export Complete', `Report saved to ${path.basename(validatedPath)}`);
+            shell.showItemInFolder(validatedPath);
         } else {
             showNotification('No Data', 'No report available for today. Generate one first.');
         }
     } catch (e) {
-        showNotification('Export Failed', 'Could not export report.');
+        console.error('Export error:', e);
+        showNotification('Export Failed', `Could not export report: ${e.message}`);
     }
 }
 
@@ -953,15 +1000,37 @@ function startServices() {
 
         // 3. Pre-flight check: Verify if dependencies are installed
         // We do this by trying to import one of our core dependencies
-        exec(`"${pythonPath}" -c "import fastapi, uvicorn, sqlalchemy, loguru, watchdog, psutil"`, { env: serviceEnv }, (err) => {
-            if (err) {
-                console.error('Python dependency check failed:', err.message);
+        // Use spawn with argument array instead of exec to prevent command injection
+        const checkProcess = spawn(pythonPath, [
+            '-c',
+            'import fastapi, uvicorn, sqlalchemy, loguru, watchdog, psutil'
+        ], {
+            env: serviceEnv,
+            stdio: 'pipe',
+            windowsHide: true
+        });
+
+        checkProcess.on('error', (err) => {
+            console.error('Python dependency check failed:', err.message);
+            showNotification(
+                'Setup Required',
+                'DocMe needs some Python libraries. Please see the Installation Guide or run: pip3 install -r requirements.txt'
+            );
+
+            // If it's a critical failure, we should probably stop here or provide more info
+            if (mainWindow) {
+                mainWindow.webContents.send('backend-error', 'Missing Python dependencies. Please install required packages.');
+            }
+        });
+
+        checkProcess.on('exit', (code) => {
+            if (code !== 0) {
+                console.error('Python dependency check failed with exit code:', code);
                 showNotification(
                     'Setup Required',
                     'DocMe needs some Python libraries. Please see the Installation Guide or run: pip3 install -r requirements.txt'
                 );
 
-                // If it's a critical failure, we should probably stop here or provide more info
                 if (mainWindow) {
                     mainWindow.webContents.send('backend-error', 'Missing Python dependencies. Please install required packages.');
                 }
@@ -1123,24 +1192,61 @@ function startActivityPoller() {
 }
 
 function startClipboardWatcher() {
+    let clipboardCheckInProgress = false;
+    let pendingClipboardText = null;
+
+    // Use a shorter polling interval but with debouncing to prevent race conditions
     setInterval(async () => {
+        // If a check is already in progress, skip this iteration
+        if (clipboardCheckInProgress) {
+            // Store the most recent clipboard text
+            const currentText = clipboard.readText();
+            if (currentText && currentText !== lastClipboardText) {
+                pendingClipboardText = currentText;
+            }
+            return;
+        }
+
         const currentText = clipboard.readText();
-        if (currentText && currentText !== lastClipboardText && currentText.trim().length > 0) {
-            lastClipboardText = currentText;
+        // Use pending text if available, otherwise use current text
+        const textToProcess = pendingClipboardText || currentText;
+
+        if (textToProcess && textToProcess !== lastClipboardText && textToProcess.trim().length > 0) {
+            lastClipboardText = textToProcess;
+            pendingClipboardText = null; // Clear pending
 
             // Only trigger if it's a "meaningful" length and looks like something the user might want to note
             // (e.g., > 2 chars to avoid single character selections)
-            if (currentText.trim().length > 2) {
-                console.log(`[Clipboard] New text detected (${currentText.substring(0, 20)}...), triggering popup...`);
+            if (textToProcess.trim().length > 2) {
+                console.log(`[Clipboard] New text detected (${textToProcess.substring(0, 20)}...), triggering popup...`);
+
+                // Set lock flag
+                clipboardCheckInProgress = true;
 
                 // Delay to allow agent to record the focal point
                 setTimeout(async () => {
                     try {
                         const date = getLocalDateString();
-                        const response = await fetch(`http://localhost:8000/events?date=${date}&limit=1`);
+
+                        // Add API key if available
+                        const headers = { 'Content-Type': 'application/json' };
+                        const apiKey = process.env.DOCME_API_KEY;
+                        if (apiKey) {
+                            headers['X-API-Key'] = apiKey;
+                        }
+
+                        const response = await fetch(`http://localhost:8000/events?date=${date}`, {
+                            headers
+                        });
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+
                         const events = await response.json();
 
                         if (events && events.length > 0) {
+                            // Get the most recent event
                             const data = events[0];
                             console.log(`[Clipboard] Attaching note to: ${data.app} | ${data.window_title}`);
 
@@ -1148,18 +1254,26 @@ function startClipboardWatcher() {
                                 id: data.id,
                                 app: data.app,
                                 window_title: data.window_title,
-                                note: currentText
+                                note: textToProcess
                             });
                         } else {
                             console.warn('[Clipboard] No events found for today to attach note to.');
                         }
                     } catch (e) {
                         console.error('[Clipboard] Failed to fetch latest event:', e);
+                    } finally {
+                        // Release lock after a short delay to prevent rapid successive checks
+                        setTimeout(() => {
+                            clipboardCheckInProgress = false;
+                        }, 500);
                     }
                 }, 800);
+            } else {
+                // Release lock immediately if text was too short
+                clipboardCheckInProgress = false;
             }
         }
-    }, 1500); // Check every 1.5s
+    }, 1000); // Check every 1 second (reduced from 1.5s for better responsiveness)
 }
 
 // ==================== APP INITIALIZATION ====================

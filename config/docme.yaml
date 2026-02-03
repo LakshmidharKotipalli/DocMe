@@ -67,11 +67,13 @@ database:
   type: "sqlite" # options: sqlite, postgresql
   sqlite_path: "" # Leave empty to use platform default (~/Library/Application Support/DocMe/ on macOS)
   postgres:
-    user: "your_username"
-    password: ""
-    host: "localhost"
-    port: 5432
-    dbname: "docme"
+    # Use environment variables for sensitive credentials
+    # Set DOCME_DB_USER, DOCME_DB_PASSWORD, DOCME_DB_HOST, DOCME_DB_PORT, DOCME_DB_NAME
+    user: "" # Read from DOCME_DB_USER environment variable
+    password: "" # Read from DOCME_DB_PASSWORD environment variable
+    host: "localhost" # Can override with DOCME_DB_HOST
+    port: 5432 # Can override with DOCME_DB_PORT
+    dbname: "docme" # Can override with DOCME_DB_NAME
 
 export_dir: "" # Leave empty to use platform default
 db_path: "" # Leave empty to use platform default (deprecated, use database.sqlite_path)

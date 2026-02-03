@@ -98,6 +98,9 @@ class DocMeAgent:
         self._setup_db_logger()
 
     def _setup_db_logger(self):
+        """
+        Setup database logger with proper error handling.
+        """
         def db_sink(message):
             record = message.record
             session = self.SessionLocal()
@@ -110,8 +113,9 @@ class DocMeAgent:
                 )
                 session.add(log)
                 session.commit()
-            except:
+            except Exception as e:
                 session.rollback()
+                logger.error(f"Failed to write to database log: {e}")
             finally:
                 session.close()
 
@@ -121,19 +125,49 @@ class DocMeAgent:
         return get_idle_time() > self.idle_threshold
 
     def generate_periodic_report(self):
-        """Generate a report in a background thread."""
+        """
+        Generate a report in a background thread with proper error handling.
+        """
         try:
             date = datetime.now().strftime("%Y-%m-%d")
-            response = requests.post(f"http://localhost:8000/reports/generate?date={date}", timeout=60)
+            # Add API key header if configured
+            headers = {}
+            api_key = os.environ.get("DOCME_API_KEY")
+            if api_key:
+                headers["X-API-Key"] = api_key
+
+            response = requests.post(
+                f"http://localhost:8000/reports/generate?date={date}",
+                timeout=30,  # Reduced from 60s to 30s
+                headers=headers
+            )
             if response.ok:
                 logger.info(f"Auto-generated report for {date}")
             else:
                 logger.warning(f"Auto-report generation failed: {response.status_code}")
+        except requests.exceptions.Timeout:
+            logger.warning("Auto-report generation timed out")
+        except requests.exceptions.ConnectionError:
+            logger.warning("Could not connect to backend for auto-report")
         except Exception as e:
             logger.debug(f"Auto-report error: {e}")
 
 
+    def _redact_sensitive_info(self, app: str, title: str) -> tuple:
+        """
+        Redact sensitive information from app names and titles before logging.
+        """
+        # Already handled in run(), but add extra safety here
+        if self.sensitive_keywords:
+            title_lower = title.lower()
+            if any(kw.lower() in title_lower for kw in self.sensitive_keywords):
+                return app, "[REDACTED]"
+        return app, title
+
     def record_event(self, source, app, title, payload=None, note=None):
+        """
+        Record an event with proper error handling and sensitive data redaction.
+        """
         # Check system idle state first
         idle_time = get_idle_time()
         if idle_time > self.idle_threshold:
@@ -153,24 +187,42 @@ class DocMeAgent:
             )
             session.add(event)
             session.commit()
-            
-            # Notify backend for real-time popup
+
+            # Notify backend for real-time popup with proper timeout and API key
             try:
-                requests.post("http://localhost:8000/events/notify", json={
-                    "type": "new_event",
-                    "id": event.id,
-                    "app": event.app,
-                    "window_title": event.window_title,
-                    "source": event.source
-                }, timeout=2)
+                headers = {}
+                api_key = os.environ.get("DOCME_API_KEY")
+                if api_key:
+                    headers["X-API-Key"] = api_key
+
+                # Redact sensitive info for notification
+                safe_app, safe_title = self._redact_sensitive_info(app, title)
+
+                requests.post(
+                    "http://localhost:8000/events/notify",
+                    json={
+                        "source": source,
+                        "app": safe_app,
+                        "title": safe_title,
+                        "note": note
+                    },
+                    timeout=5,  # Increased from 2s to 5s
+                    headers=headers
+                )
+            except requests.exceptions.Timeout:
+                logger.debug("Backend notification timed out")
+            except requests.exceptions.ConnectionError:
+                logger.debug("Could not connect to backend for notification")
             except Exception as e:
                 logger.debug(f"Failed to notify backend: {e}")
 
+            # Redact sensitive info for logging
+            safe_app, safe_title = self._redact_sensitive_info(app, title)
+
             if note:
-                logger.info(f"Recorded event with note: {source} | {app} | {title}")
+                logger.info(f"Recorded event with note: {source} | {safe_app} | {safe_title}")
             else:
-                logger.info(f"Recorded event: {source} | {app} | {title}")
-            print(f"[DocMe] Logged: {app} | {title}")
+                logger.info(f"Recorded event: {source} | {safe_app} | {safe_title}")
         except Exception as e:
             logger.error(f"Failed to record event: {e}")
             session.rollback()
@@ -178,28 +230,31 @@ class DocMeAgent:
             session.close()
 
     def run(self):
+        """
+        Main agent run loop with graceful shutdown handling.
+        """
         logger.info("DocMe Agent started...")
         self.fswatcher.start()
-        
+
         if self.config.get('toggles', {}).get('logic_tracker', True):
             self.logic_tracker.start()
-            
+
         try:
             while True:
                 current_idle = self.is_idle()
                 app, title, pid = get_foreground_window()
-                
+
                 if not app or not title:
                     logger.warning(f"Could not retrieve foreground window info. App: {app}, Title: {title}. Check macOS permissions.")
-                
+
                 # Trusted apps that should never be redacted (terminal apps, code editors, etc.)
-                trusted_apps = ["terminal", "iterm", "iterm2", "warp", "hyper", "alacritty", 
-                                "kitty", "code", "cursor", "visual studio code", "sublime", 
+                trusted_apps = ["terminal", "iterm", "iterm2", "warp", "hyper", "alacritty",
+                                "kitty", "code", "cursor", "visual studio code", "sublime",
                                 "pycharm", "intellij", "webstorm", "vim", "neovim", "emacs"]
-                
+
                 app_lower = app.lower() if app else ""
                 is_trusted = any(trusted in app_lower for trusted in trusted_apps)
-                
+
                 # Check for completely excluded apps (DocMe, System apps etc)
                 if any(excl in app_lower for excl in self._excluded_list):
                     time.sleep(self.polling_interval)
@@ -207,15 +262,15 @@ class DocMeAgent:
 
                 # Redact sensitive keywords (but NOT for trusted apps)
                 is_sensitive = not is_trusted and any(kw.lower() in title.lower() for kw in self.sensitive_keywords)
-                
+
                 if is_sensitive:
                     title = "[REDACTED]"
                     app = "[SENSITIVE]"
-                
+
                 url = None
                 payload = None
                 source = "foreground_window"
-                
+
                 # Check if this is an AI application for extended tracking
                 is_ai_app = any(ai.lower() in app_lower for ai in self.ai_apps)
                 if is_ai_app:
@@ -226,18 +281,18 @@ class DocMeAgent:
                         "context": title,
                         "extended_tracking": True
                     }
-                
+
                 if not current_idle:
                     if sys.platform == "darwin" and is_browser_macos(app):
                         source = "browser"
                         url = get_browser_url_macos(app)
-                        if url: 
+                        if url:
                             payload = payload or {}
                             payload["url"] = url
                     elif sys.platform == "win32" and is_browser_windows(app):
                         source = "browser"
                         url = get_browser_url_windows(app)
-                        if url: 
+                        if url:
                             payload = payload or {}
                             payload["url"] = url
                 elif current_idle:
@@ -246,37 +301,48 @@ class DocMeAgent:
                 now = time.time()
                 is_heartbeat = (now - self.last_heartbeat) >= self.heartbeat_interval
 
-                changed = (app != self.last_app or 
-                           title != self.last_title or 
+                changed = (app != self.last_app or
+                           title != self.last_title or
                            url != self.last_url or
                            current_idle != self.last_idle_state)
 
                 if changed or is_heartbeat:
                     if source != "idle":
                         self.record_event(source, app, title, payload=payload)
-                        if not (is_heartbeat and not changed):
-                            print(f"[Event] {app} | {title}")
                     else:
                         logger.debug("System is idle; skipping log as per user preference.")
-                    
+
                     self.last_app = app
                     self.last_title = title
                     self.last_url = url
                     self.last_idle_state = current_idle
                     self.last_heartbeat = now
-                
+
                 # Check for periodic auto-report generation
                 if self.auto_report_enabled and (now - self.last_auto_report) >= self.auto_report_interval:
                     self.last_auto_report = now
                     logger.info(f"Triggering auto-report generation (every {self.auto_report_interval // 60} min)...")
                     threading.Thread(target=self.generate_periodic_report, daemon=True).start()
-                
+
                 time.sleep(self.polling_interval)
         except KeyboardInterrupt:
             logger.info("DocMe Agent stopping...")
+        except Exception as e:
+            logger.error(f"Unexpected error in agent run loop: {e}")
         finally:
-            self.fswatcher.stop()
-            self.logic_tracker.stop()
+            # Graceful shutdown
+            logger.info("Shutting down file watcher and logic tracker...")
+            try:
+                self.fswatcher.stop()
+            except Exception as e:
+                logger.error(f"Error stopping file watcher: {e}")
+
+            try:
+                self.logic_tracker.stop()
+            except Exception as e:
+                logger.error(f"Error stopping logic tracker: {e}")
+
+            logger.info("DocMe Agent stopped")
 
 if __name__ == "__main__":
     agent = DocMeAgent()

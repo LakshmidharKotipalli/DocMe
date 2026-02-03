@@ -2,6 +2,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta
 from typing import List, Optional
+from loguru import logger
 from agent.store.models import Event, Session as DbSession
 from sqlalchemy import asc
 from backend.enrichment.enricher import Enricher
@@ -12,10 +13,17 @@ class SessionBuilder:
         self.enricher = Enricher()
 
     def generate_context_signature(self, app, title, project=""):
+        """
+        Generate a hash signature for grouping similar contexts.
+        SHA-256 is appropriate for non-security use cases like context grouping.
+        """
         sig_str = f"{app}|{title}|{project}"
         return hashlib.sha256(sig_str.encode()).hexdigest()
 
     def get_activity_label(self, app):
+        """
+        Classify application type based on app name.
+        """
         app = app.lower() if app else ""
         if any(x in app for x in ["code", "cursor", "vsc", "intellij", "pycharm", "sublime"]):
             return "coding"
@@ -36,7 +44,7 @@ class SessionBuilder:
             # Get events for the date
             start_of_day = datetime.strptime(date_str, "%Y-%m-%d")
             end_of_day = start_of_day + timedelta(days=1)
-            
+
             events = db_session.query(Event).filter(
                 Event.ts >= start_of_day,
                 Event.ts < end_of_day
@@ -46,12 +54,12 @@ class SessionBuilder:
                 return
 
             current_session = None
-            
+
             for event in events:
                 app = event.app or "Unknown"
                 title = event.window_title or "No Title"
                 source = event.source
-                
+
                 if source == "idle":
                     app = "Idle"
                     title = "System Idle"
@@ -61,7 +69,7 @@ class SessionBuilder:
                 else:
                     activity_label = self.get_activity_label(app)
                     project, tags = self.enricher.infer_project_and_tags(app, title)
-                
+
                 # Extract hint (e.g. URL from browser events)
                 summary_hint = None
                 if event.payload_json:
@@ -71,8 +79,10 @@ class SessionBuilder:
                             summary_hint = payload["url"]
                         elif "diff_summary" in payload:
                             summary_hint = payload["diff_summary"]
-                    except:
-                        pass
+                    except json.JSONDecodeError:
+                        logger.debug(f"Failed to parse payload for event {event.id}")
+                    except Exception as e:
+                        logger.debug(f"Error processing payload: {e}")
 
                 sig = self.generate_context_signature(app, title, project)
 
@@ -100,7 +110,7 @@ class SessionBuilder:
                 else:
                     # Different context, save current and start new
                     db_session.add(current_session)
-                    
+
                     # Start new session
                     current_session = DbSession(
                         start_ts=event.ts,
@@ -114,27 +124,33 @@ class SessionBuilder:
                         tags_json=json.dumps(tags),
                         summary_hint=summary_hint
                     )
-            
+
             if current_session:
                 db_session.add(current_session)
-            
+
             db_session.commit()
-            
+
             # Post-processing: merge tiny sessions and enrich
             self.post_process_sessions(db_session, start_of_day, end_of_day)
-            
+
+        except ValueError as e:
+            logger.error(f"Invalid date format for session building: {e}")
+            db_session.rollback()
         except Exception as e:
-            print(f"Error building sessions: {e}")
+            logger.error(f"Error building sessions: {e}")
             db_session.rollback()
         finally:
             db_session.close()
 
     def post_process_sessions(self, db_session, start_dt, end_dt):
+        """
+        Post-process sessions to merge tiny sessions and apply enrichment.
+        """
         sessions = db_session.query(DbSession).filter(
             DbSession.start_ts >= start_dt,
             DbSession.start_ts < end_dt
         ).order_by(asc(DbSession.start_ts)).all()
-        
+
         # Merge logic (simplified: merge sessions < 20s if they are between same apps)
         # For MVP, we'll just keep them but it's a good place for refinement.
         pass

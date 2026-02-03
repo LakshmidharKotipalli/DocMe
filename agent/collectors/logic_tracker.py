@@ -6,6 +6,15 @@ import difflib
 import hashlib
 import yaml
 from loguru import logger
+from functools import lru_cache
+from collections import OrderedDict
+
+# Constants for resource limits
+MAX_DIRECTORY_DEPTH = 4
+MAX_FILE_SIZE_BYTES = 500 * 1024  # 500KB
+MAX_DIFF_CHARS = 3000
+MAX_CACHE_SIZE = 1000  # Maximum number of files to cache
+MAX_FILES_PER_SCAN = 500  # Maximum files to process per scan
 
 class LogicTracker:
     def __init__(self, interval_sec=30, record_callback=None, watch_dirs=None, config_path=None):
@@ -15,11 +24,19 @@ class LogicTracker:
         self.config_path = self._find_config(config_path)
         self.running = False
         self.thread = None
-        self.file_cache = {} 
+        # Use OrderedDict for LRU cache
+        self.file_cache = OrderedDict()
         self.code_extensions = {'.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', '.sh', '.yaml', '.yml', '.sql', '.md'}
         self.llm_client = None
         self.llm_config = None
         self._init_llm()
+
+        # Directories to skip during traversal
+        self.skipped_dirs = {
+            'node_modules', '__pycache__', 'data', '.venv', 'dist', 'build',
+            'release', 'electron', 'Library', 'Applications', '.git',
+            '.vscode', '.idea', 'venv', 'env', '.env', 'coverage'
+        }
 
     def _find_config(self, config_path):
         """Find config file using environment variable and platform defaults."""
@@ -66,38 +83,64 @@ class LogicTracker:
             logger.debug(f"LogicTracker: LLM not configured ({e})")
             self.llm_client = None
 
+    def _add_to_cache(self, path, content):
+        """
+        Add item to LRU cache, evicting oldest if cache is full.
+        """
+        # If path already exists, move it to the end (most recently used)
+        if path in self.file_cache:
+            del self.file_cache[path]
+
+        # Add new item
+        self.file_cache[path] = content
+
+        # Evict oldest if cache is too large
+        while len(self.file_cache) > MAX_CACHE_SIZE:
+            self.file_cache.popitem(last=False)
+
     def get_content_diffs(self):
-        """Strictly content-based diffing that ignores Git state."""
+        """
+        Strictly content-based diffing that ignores Git state.
+        Implements resource limits to prevent memory exhaustion.
+        """
         diffs = []
         changed_files = []
-        
-        max_depth = 4 # Safety limit for traversing user directories
+        files_processed = 0
+
         for d in self.watch_dirs:
             path = os.path.expanduser(d)
-            if not os.path.exists(path): continue
-            
+            if not os.path.exists(path):
+                continue
+
             base_depth = path.count(os.sep)
             for root, dirs, files in os.walk(path):
                 # Apply depth limit
                 current_depth = root.count(os.sep)
-                if current_depth - base_depth >= max_depth:
-                    dirs[:] = [] # Skip subdirectories
+                if current_depth - base_depth >= MAX_DIRECTORY_DEPTH:
+                    dirs[:] = []  # Skip subdirectories
                     continue
 
-                # Skip noise
-                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in {'node_modules', '__pycache__', 'data', '.venv', 'dist', 'build', 'release', 'electron', 'Library', 'Applications'}]
-                
+                # Skip noise directories
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in self.skipped_dirs]
+
                 for file in files:
+                    # Check file count limit
+                    if files_processed >= MAX_FILES_PER_SCAN:
+                        logger.warning(f"Reached maximum file count limit ({MAX_FILES_PER_SCAN}) for this scan")
+                        return '\n'.join(diffs), changed_files
+
                     if any(file.endswith(ext) for ext in self.code_extensions):
                         full_path = os.path.join(root, file)
                         try:
-                            # Skip very large files to avoid memory spikes (max 500KB)
-                            if os.path.getsize(full_path) > 500 * 1024:
+                            # Skip very large files to avoid memory spikes
+                            file_size = os.path.getsize(full_path)
+                            if file_size > MAX_FILE_SIZE_BYTES:
+                                logger.debug(f"Skipping large file {file} ({file_size} bytes)")
                                 continue
 
                             with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
                                 current_content = f.read()
-                            
+
                             # Content-aware change detection
                             if full_path in self.file_cache:
                                 if self.file_cache[full_path] != current_content:
@@ -112,15 +155,24 @@ class LogicTracker:
                                     if diff_text:
                                         diffs.append(diff_text)
                                         changed_files.append(file)
-                            
-                            self.file_cache[full_path] = current_content
-                        except:
+
+                            # Update cache with LRU eviction
+                            self._add_to_cache(full_path, current_content)
+                            files_processed += 1
+
+                        except IOError as e:
+                            logger.debug(f"Failed to read file {full_path}: {e}")
                             continue
-        
+                        except Exception as e:
+                            logger.debug(f"Unexpected error processing file {full_path}: {e}")
+                            continue
+
         return '\n'.join(diffs), changed_files
 
     def summarize_with_llm(self, diff_text, changed_files):
-        """Use LLM to generate a human-readable summary of code changes."""
+        """
+        Use LLM to generate a human-readable summary of code changes.
+        """
         # Reload config to pick up UI changes
         try:
             with open(self.config_path, 'r') as f:
@@ -133,19 +185,20 @@ class LogicTracker:
                     api_key=self.llm_config.get('api_key') or "dummy",
                     base_url=self.llm_config.get('base_url')
                 )
-        except:
-            pass
+        except (IOError, yaml.YAMLError) as e:
+            logger.debug(f"Failed to reload LLM config: {e}")
+        except Exception as e:
+            logger.debug(f"Unexpected error reloading LLM config: {e}")
 
         if not self.llm_client or not diff_text:
             return None
-        
+
         try:
             # Truncate diff if too long
-            max_diff_chars = 3000
-            truncated_diff = diff_text[:max_diff_chars]
-            if len(diff_text) > max_diff_chars:
+            truncated_diff = diff_text[:MAX_DIFF_CHARS]
+            if len(diff_text) > MAX_DIFF_CHARS:
                 truncated_diff += "\n... (truncated)"
-            
+
             prompt = f"""Analyze this code diff and provide a brief, one-line summary of what changed.
 Focus on the functional change, not the files modified.
 
@@ -161,23 +214,23 @@ Respond with ONLY a brief summary (max 15 words), like:
 - "Fixed scrolling issue in dashboard"
 - "Refactored database connection handling"
 """
-            
+
             response = self.llm_client.chat.completions.create(
                 model=self.llm_config.get('model', 'gemma3:1b'),
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=50,
                 temperature=0.3
             )
-            
+
             summary = response.choices[0].message.content.strip()
             # Clean up the response
             summary = summary.replace('"', '').replace("'", "")
             if summary.startswith('-'):
                 summary = summary[1:].strip()
-            
+
             logger.debug(f"LLM diff summary: {summary}")
             return summary
-            
+
         except Exception as e:
             logger.debug(f"LLM summarization failed: {e}")
             return None
