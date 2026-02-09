@@ -1,218 +1,21 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Activity, Calendar, Code, Cpu, Globe, HardDrive,
-  MessageSquare, Terminal, X, FileText, List, Download, Settings, RefreshCw, Trash2, Edit3, Minimize2, ArrowUp, ArrowDown, Search, ChevronRight, Sparkles, Zap
+  MessageSquare, Terminal, X, FileText, List, Download, Settings, RefreshCw, Trash2, PieChart as PieChartIcon, BarChart3, Edit3, Minimize2, Maximize2, ArrowUp, ArrowDown
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { A2UIProvider, A2UIRenderer } from '@a2ui-sdk/react/0.8';
+// Recharts removed as Stats tab is gone
 
 const API_BASE = "http://localhost:8000";
 const isElectron = window.electronAPI?.isElectron || false;
 
-/* ═══════════════════════════════════════════════
-   A2UI HELPERS — Build A2UI messages from data
-   ═══════════════════════════════════════════════ */
-
-/**
- * Build A2UI messages to render a summary surface from sessions data
- */
-function buildSessionsSurface(sessions, date) {
-  if (!sessions || sessions.length === 0) return [];
-
-  // Group sessions by app
-  const appGroups = {};
-  sessions.forEach(s => {
-    const app = s.primary_app || 'Unknown';
-    if (!appGroups[app]) appGroups[app] = { count: 0, totalDuration: 0 };
-    appGroups[app].count += 1;
-    appGroups[app].totalDuration += (s.duration_sec || 0);
-  });
-
-  const sortedApps = Object.entries(appGroups)
-    .sort((a, b) => b[1].totalDuration - a[1].totalDuration)
-    .slice(0, 8);
-
-  // Build component tree
-  const components = [
-    {
-      id: 'root',
-      component: {
-        Column: {
-          children: { explicitList: ['header-row', 'divider-1', 'apps-list'] },
-          gap: 12,
-        }
-      }
-    },
-    {
-      id: 'header-row',
-      component: {
-        Row: {
-          children: { explicitList: ['stat-sessions', 'stat-apps'] },
-          gap: 16,
-        }
-      }
-    },
-    {
-      id: 'stat-sessions',
-      component: {
-        Card: {
-          child: 'stat-sessions-content',
-        }
-      }
-    },
-    {
-      id: 'stat-sessions-content',
-      component: {
-        Column: {
-          children: { explicitList: ['stat-sessions-num', 'stat-sessions-label'] },
-          gap: 2,
-        }
-      }
-    },
-    {
-      id: 'stat-sessions-num',
-      component: {
-        Text: {
-          text: { literalString: String(sessions.length) },
-          usageHint: 'h2',
-        }
-      }
-    },
-    {
-      id: 'stat-sessions-label',
-      component: {
-        Text: {
-          text: { literalString: 'Sessions' },
-          usageHint: 'body2',
-        }
-      }
-    },
-    {
-      id: 'stat-apps',
-      component: {
-        Card: {
-          child: 'stat-apps-content',
-        }
-      }
-    },
-    {
-      id: 'stat-apps-content',
-      component: {
-        Column: {
-          children: { explicitList: ['stat-apps-num', 'stat-apps-label'] },
-          gap: 2,
-        }
-      }
-    },
-    {
-      id: 'stat-apps-num',
-      component: {
-        Text: {
-          text: { literalString: String(Object.keys(appGroups).length) },
-          usageHint: 'h2',
-        }
-      }
-    },
-    {
-      id: 'stat-apps-label',
-      component: {
-        Text: {
-          text: { literalString: 'Applications' },
-          usageHint: 'body2',
-        }
-      }
-    },
-    {
-      id: 'divider-1',
-      component: { Divider: {} }
-    },
-    {
-      id: 'apps-list',
-      component: {
-        Column: {
-          children: { explicitList: ['apps-title', ...sortedApps.map((_, i) => `app-row-${i}`)] },
-          gap: 8,
-        }
-      }
-    },
-    {
-      id: 'apps-title',
-      component: {
-        Text: {
-          text: { literalString: 'Top Applications' },
-          usageHint: 'h3',
-        }
-      }
-    },
-    ...sortedApps.flatMap(([app, data], i) => {
-      const mins = Math.round(data.totalDuration / 60);
-      return [
-        {
-          id: `app-row-${i}`,
-          component: {
-            Row: {
-              children: { explicitList: [`app-name-${i}`, `app-time-${i}`] },
-              gap: 8,
-            }
-          }
-        },
-        {
-          id: `app-name-${i}`,
-          weight: 1,
-          component: {
-            Text: {
-              text: { literalString: app },
-              usageHint: 'body1',
-            }
-          }
-        },
-        {
-          id: `app-time-${i}`,
-          component: {
-            Text: {
-              text: { literalString: mins > 0 ? `${mins}m · ${data.count} session${data.count !== 1 ? 's' : ''}` : `${data.count} session${data.count !== 1 ? 's' : ''}` },
-              usageHint: 'body2',
-            }
-          }
-        },
-      ];
-    }),
-  ];
-
-  return [
-    { surfaceUpdate: { surfaceId: 'day-summary', components } },
-    { beginRendering: { surfaceId: 'day-summary', root: 'root' } },
-  ];
-}
-
-/**
- * A2UI Surface wrapper component with glass styling
- */
-const A2UISurface = ({ messages, title, onAction }) => {
-  if (!messages || messages.length === 0) return null;
-
-  return (
-    <div className="a2ui-surface-container">
-      <div className="a2ui-surface-header">
-        <span className="a2ui-badge">A2UI</span>
-        <span className="a2ui-surface-title">{title}</span>
-      </div>
-      <A2UIProvider messages={messages} onAction={onAction}>
-        <A2UIRenderer onAction={onAction || (() => {})} />
-      </A2UIProvider>
-    </div>
-  );
-};
-
-/* ═══════════════════════════════════════════════
-   POPUP NOTE — Electron floating window
-   ═══════════════════════════════════════════════ */
 const PopupNote = () => {
   const [noteText, setNoteText] = useState("");
   const [event, setEvent] = useState(null);
   const quickNoteRef = useRef(null);
   const params = new URLSearchParams(window.location.search);
   const eventId = params.get('eventId');
+
   const [userResponded, setUserResponded] = useState(false);
 
   useEffect(() => {
@@ -220,8 +23,9 @@ const PopupNote = () => {
       const initialNote = params.get('initialNote');
       if (initialNote) {
         setNoteText(`[Copied] ${initialNote}`);
-        setUserResponded(true);
+        setUserResponded(true); // Don't auto-close if we have content
       }
+
       const app = params.get('app');
       const title = params.get('title');
       setEvent({ id: eventId, app, window_title: title });
@@ -266,14 +70,14 @@ const PopupNote = () => {
     <div className="toast-content" style={{ padding: '20px', height: '100vh', borderRadius: '0' }}>
       <div className="flex-between" style={{ marginBottom: '12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <MessageSquare size={16} style={{ color: 'var(--vermillion)' }} />
+          <MessageSquare size={16} color="#818cf8" />
           <span style={{ fontWeight: '600', fontSize: '14px' }}>What did you do?</span>
         </div>
         <button onClick={() => window.electronAPI.closeWindow()} className="icon-btn"><X size={16} /></button>
       </div>
-      <p style={{ fontSize: '11px', color: 'var(--ink-muted)', marginBottom: '10px' }}>
-        Logged: <span style={{ color: 'var(--ink-primary)' }}>{event?.app || 'None'}</span>
-        {event?.window_title && <span style={{ opacity: 0.6, marginLeft: '4px' }}>— {event.window_title}</span>}
+      <p style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '10px' }}>
+        Logged: <span style={{ color: '#f1f5f9' }}>{event?.app || 'None'}</span>
+        {event?.window_title && <span style={{ opacity: 0.6, marginLeft: '4px' }}>- {event.window_title}</span>}
       </p>
       <textarea
         ref={quickNoteRef}
@@ -285,7 +89,7 @@ const PopupNote = () => {
         }}
         placeholder="Add some notes..."
         className="note-textarea"
-        style={{ minHeight: '80px', marginBottom: '16px' }}
+        style={{ minHeight: '80px', fontSize: '13px', padding: '12px', marginBottom: '16px' }}
         autoFocus
       />
       <div className="flex-end" style={{ gap: '8px' }}>
@@ -296,13 +100,13 @@ const PopupNote = () => {
   );
 };
 
-/* ═══════════════════════════════════════════════
-   DASHBOARD — Main application view
-   ═══════════════════════════════════════════════ */
 const Dashboard = () => {
   const getLocalDate = () => {
     const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   };
 
   const [activeTab, setActiveTab] = useState('logs');
@@ -312,7 +116,7 @@ const Dashboard = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [report, setReport] = useState(null);
   const [editingNoteId, setEditingNoteId] = useState(null);
-  const [reverseSort, setReverseSort] = useState(false);
+  const [reverseSort, setReverseSort] = useState(false); // Default: latest on top
   const [noteText, setNoteText] = useState("");
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -335,18 +139,20 @@ const Dashboard = () => {
   const quickNoteRef = useRef(null);
   const lastActivityRef = useRef({ app: '', title: '', id: null });
 
-  // ─── Data fetching ───
   useEffect(() => {
+    // Immediate fetch on mount and date change
     fetchData();
+    // Poll every 5 seconds for faster updates
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, [activeDate]);
 
   useEffect(() => {
-    if (activeTab === 'report') fetchReport();
+    if (activeTab === 'report') {
+      fetchReport();
+    }
   }, [activeTab, activeDate]);
 
-  // ─── Electron listeners ───
   useEffect(() => {
     if (isElectron) {
       window.electronAPI.getSettings().then(settings => {
@@ -363,6 +169,7 @@ const Dashboard = () => {
       });
       window.electronAPI.getLLMStatus().then(status => setLlmServerRunning(status));
       window.electronAPI.onLLMStatusChanged((status) => setLlmServerRunning(status));
+
       if (window.electronAPI.onBackendError) {
         window.electronAPI.onBackendError((msg) => {
           setBackendError(msg);
@@ -372,7 +179,6 @@ const Dashboard = () => {
     }
   }, []);
 
-  // ─── WebSocket ───
   useEffect(() => {
     let socket = null;
     let reconnectTimer = null;
@@ -382,39 +188,64 @@ const Dashboard = () => {
     const connectWebSocket = () => {
       try {
         socket = new WebSocket('ws://localhost:8000/ws');
+
         socket.onopen = () => {
           console.log('WebSocket connected');
           reconnectAttempts = 0;
         };
+
         socket.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
             if (data.type === 'new_event') {
+              // Only pop up if the window/app has actually changed
               const hasChanged = data.app !== lastActivityRef.current.app ||
                 data.window_title !== lastActivityRef.current.title;
+
               if (hasChanged) {
                 const previous = { ...lastActivityRef.current };
-                lastActivityRef.current = { id: data.id, app: data.app, title: data.window_title };
+
+                // Update ref with NEW activity data
+                lastActivityRef.current = {
+                  id: data.id,
+                  app: data.app,
+                  title: data.window_title
+                };
+
+                // Only trigger popup for the activity we just LEFT
+                // and only if it was a real activity (foreground or browser)
                 const isTrackedSource = data.source === 'foreground_window' || data.source === 'browser';
+
                 if (previous.app && previous.id && isTrackedSource) {
                   setTimeout(() => {
                     if (isElectron) {
                       window.electronAPI.createPopupWindow({
-                        id: previous.id, app: previous.app, window_title: previous.title
+                        id: previous.id,
+                        app: previous.app,
+                        window_title: previous.title
                       });
                     }
                   }, 500);
                 }
+
                 fetchData();
               } else {
+                // Even if we don't pop up, still refresh data to show logs in dashboard
                 fetchData();
               }
             }
-          } catch (err) { console.error("WS Message Error:", err); }
+          } catch (err) {
+            console.error("WS Message Error:", err);
+          }
         };
-        socket.onerror = (error) => console.error('WebSocket error:', error);
+
+        socket.onerror = (error) => {
+          console.error('WebSocket error:', error);
+        };
+
         socket.onclose = () => {
           console.log('WebSocket disconnected');
+          // Attempt to reconnect with exponential backoff
           if (reconnectAttempts < maxReconnectAttempts) {
             const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
             reconnectAttempts++;
@@ -422,16 +253,20 @@ const Dashboard = () => {
             reconnectTimer = setTimeout(connectWebSocket, delay);
           }
         };
-      } catch (err) { console.error('WebSocket connection failed:', err); }
+      } catch (err) {
+        console.error('WebSocket connection failed:', err);
+      }
     };
+
+    // Initial connection
     connectWebSocket();
+
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) socket.close();
     };
   }, []);
 
-  // ─── Actions ───
   const updateSetting = async (key, value) => {
     const newSettings = { ...appSettings, [key]: value };
     setAppSettings(newSettings);
@@ -450,8 +285,11 @@ const Dashboard = () => {
         const eventData = await eventRes.json();
         setEvents(Array.isArray(eventData) ? [...eventData].reverse() : []);
       }
-    } catch (err) { console.error("Fetch Error:", err); }
-    finally { setLoading(false); }
+    } catch (err) {
+      console.error("Fetch Error:", err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fetchReport = async () => {
@@ -475,7 +313,9 @@ const Dashboard = () => {
         setSystemLogs(data);
         setViewingLogs(true);
       }
-    } catch (err) { console.error("Fetch Logs Error:", err); }
+    } catch (err) {
+      console.error("Fetch Logs Error:", err);
+    }
   };
 
   const saveNote = async (eventId) => {
@@ -487,7 +327,9 @@ const Dashboard = () => {
       });
       setEditingNoteId(null);
       fetchData();
-    } catch (err) { console.error("Save Note Error:", err); }
+    } catch (err) {
+      console.error("Save Note Error:", err);
+    }
   };
 
   const saveQuickNote = async () => {
@@ -508,12 +350,16 @@ const Dashboard = () => {
       setNoteText("");
       fetchData();
       if (isElectron) window.electronAPI.showNotification("Note Saved", "Your activity has been updated.");
-    } catch (err) { console.error("Save Quick Note Error:", err); }
+    } catch (err) {
+      console.error("Save Quick Note Error:", err);
+    }
   };
 
   const saveMiniNote = async () => {
     const eventId = events[0]?.id;
-    if (!eventId || !miniNoteText.trim()) return;
+    if (!eventId || !miniNoteText.trim()) {
+      return;
+    }
     try {
       await fetch(`${API_BASE}/events/${eventId}/note`, {
         method: 'POST',
@@ -523,7 +369,9 @@ const Dashboard = () => {
       setMiniNoteText("");
       fetchData();
       if (isElectron) window.electronAPI.showNotification("Note Saved", `Note added to: ${events[0]?.app}`);
-    } catch (err) { console.error("Save Mini Note Error:", err); }
+    } catch (err) {
+      console.error("Save Mini Note Error:", err);
+    }
   };
 
   const deleteEvent = async (eventId) => {
@@ -531,7 +379,9 @@ const Dashboard = () => {
     try {
       await fetch(`${API_BASE}/events/${eventId}`, { method: 'DELETE' });
       fetchData();
-    } catch (err) { console.error("Delete Error:", err); }
+    } catch (err) {
+      console.error("Delete Error:", err);
+    }
   };
 
   const clearDayData = async () => {
@@ -543,7 +393,19 @@ const Dashboard = () => {
         setReport(null);
         if (isElectron) window.electronAPI.showNotification("Data Cleared", `All logs for ${activeDate} have been deleted.`);
       }
-    } catch (err) { console.error("Clear Day Error:", err); }
+    } catch (err) {
+      console.error("Clear Day Error:", err);
+    }
+  };
+
+  const getActivityIcon = (source, label) => {
+    if (source === 'logic_tracker') return <Cpu size={16} color="#f59e0b" />;
+    if (source === 'browser') return <Globe size={16} color="#2dd4bf" />;
+    switch (label) {
+      case 'coding': return <Code size={16} color="#a3e635" />;
+      case 'terminal': return <Terminal size={16} color="#94a3b8" />;
+      default: return <Activity size={16} color="#64748b" />;
+    }
   };
 
   const generateReport = async () => {
@@ -554,8 +416,11 @@ const Dashboard = () => {
         fetchReport();
         setActiveTab('report');
       }
-    } catch (err) { console.error("Report gen error:", err); }
-    finally { setGenerating(false); }
+    } catch (err) {
+      console.error("Report gen error:", err);
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const toggleLLMServer = async () => {
@@ -564,32 +429,10 @@ const Dashboard = () => {
       await window.electronAPI.stopLLM();
     } else {
       const res = await window.electronAPI.startLLM(appSettings.llmModel || 'ggml-org/gemma-3-1b-it-GGUF');
-      if (res.status === 'error') alert(`Failed to start LLM Server: ${res.message}`);
+      if (res.status === 'error') {
+        alert(`Failed to start LLM Server: ${res.message}`);
+      }
     }
-  };
-
-  const getIconClass = (source, label) => {
-    if (source === 'logic_tracker') return 'logic';
-    if (source === 'browser') return 'browser';
-    if (label === 'coding') return 'coding';
-    if (label === 'terminal') return 'terminal';
-    return 'default';
-  };
-
-  const getActivityIcon = (source, label) => {
-    const color = {
-      logic: '#b5860a',
-      browser: '#2a7c6f',
-      coding: '#2a7c6f',
-      terminal: '#5c5550',
-      default: '#9c9590',
-    };
-    const cls = getIconClass(source, label);
-    if (source === 'logic_tracker') return <Cpu size={16} color={color[cls]} />;
-    if (source === 'browser') return <Globe size={16} color={color[cls]} />;
-    if (label === 'coding') return <Code size={16} color={color[cls]} />;
-    if (label === 'terminal') return <Terminal size={16} color={color[cls]} />;
-    return <Activity size={16} color={color[cls]} />;
   };
 
   const filteredEvents = useMemo(() => {
@@ -602,111 +445,122 @@ const Dashboard = () => {
         (e.note?.toLowerCase().includes(query))
       );
     }
-    if (reverseSort) return result.reverse();
+
+    // fetchData already reverses the order (default: latest first)
+    // If reverseSort is true, we want oldest first (un-reverse the reversed array)
+    if (reverseSort) {
+      return result.reverse();
+    }
     return result;
   }, [events, searchQuery, reverseSort]);
 
-  const formatDate = (dateStr) => {
-    const d = new Date(dateStr + 'T00:00:00');
-    return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
-  };
-
-  // Build A2UI messages from sessions for the report view
-  const a2uiMessages = useMemo(() => {
-    return buildSessionsSurface(sessions, activeDate);
-  }, [sessions, activeDate]);
-
-  const handleA2UIAction = useCallback((action) => {
-    console.log('A2UI Action:', action);
-  }, []);
-
-  /* ─────────────────────────────────────
-     RENDER
-     ───────────────────────────────────── */
   return (
     <div className="main-container">
-
-      {/* ═══ HEADER ═══ */}
+      {/* Native-feeling Drag Header */}
       <header className="native-header">
-        <div className="header-brand">
-          <img src="./logo.png" alt="DocMe" className="header-brand-logo" />
-          <span className="header-brand-name">DocMe</span>
+        <div className="header-title-area">
+          <img src="./logo.png" alt="DocMe Logo" style={{ width: '20px', height: '20px', borderRadius: '4px' }} />
+          <span style={{ fontSize: '13px', fontWeight: '600', color: '#f1f5f9', marginLeft: '8px' }}>DocMe</span>
         </div>
 
-        <div className="header-center no-drag">
-          <div className="date-picker-wrapper">
-            <Calendar size={14} style={{ color: 'var(--vermillion)', opacity: 0.7 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="glass-panel no-drag" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', borderRadius: '8px' }}>
+            <Calendar size={14} color="#a3e635" />
             <input
               type="date"
               value={activeDate}
               onChange={(e) => setActiveDate(e.target.value)}
+              style={{ background: 'transparent', border: 'none', color: 'white', outline: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }}
             />
           </div>
         </div>
 
-        <div className="header-right no-drag">
-          <div className="llm-toggle">
-            <span className={`llm-toggle-label ${llmServerRunning ? 'on' : 'off'}`}>
+        <div style={{ position: 'absolute', right: '16px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="no-drag" style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.05)', padding: '4px 8px', borderRadius: '20px' }}>
+            <span style={{ fontSize: '10px', fontWeight: '600', color: llmServerRunning ? '#a3e635' : '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               LLM {llmServerRunning ? 'Live' : 'Off'}
             </span>
-            <div className={`llm-switch ${llmServerRunning ? 'on' : 'off'}`} onClick={toggleLLMServer}>
-              <div className="llm-switch-knob" />
+            <div
+              onClick={toggleLLMServer}
+              style={{
+                width: '32px',
+                height: '18px',
+                background: llmServerRunning ? 'rgba(163, 230, 53, 0.2)' : 'rgba(255,255,255,0.1)',
+                borderRadius: '10px',
+                position: 'relative',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease',
+                border: llmServerRunning ? '1px solid rgba(163, 230, 53, 0.3)' : '1px solid rgba(255,255,255,0.1)'
+              }}
+            >
+              <div style={{
+                position: 'absolute',
+                top: '2px',
+                left: llmServerRunning ? '16px' : '2px',
+                width: '12px',
+                height: '12px',
+                background: llmServerRunning ? '#a3e635' : '#94a3b8',
+                borderRadius: '50%',
+                transition: 'all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)',
+                boxShadow: llmServerRunning ? '0 0 8px rgba(163, 230, 53, 0.5)' : 'none'
+              }} />
             </div>
           </div>
-          <button onClick={() => setSettingsOpen(true)} className="btn-icon">
-            <Settings size={17} />
+
+          <button onClick={() => setSettingsOpen(true)} className="icon-btn no-drag">
+            <Settings size={16} />
           </button>
         </div>
       </header>
 
-      {/* ═══ NAV BAR ═══ */}
-      <nav className="nav-bar">
-        <div className="nav-tabs">
+      {/* Main Navigation */}
+      <nav style={{ padding: '16px 20px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '4px', background: 'rgba(255,255,255,0.05)', padding: '3px', borderRadius: '10px' }}>
           <button
             onClick={() => setActiveTab('logs')}
-            className={`nav-tab ${activeTab === 'logs' ? 'active' : ''}`}
+            className={`tab-btn small ${activeTab === 'logs' ? 'active logs' : ''}`}
+            style={{ borderRadius: '8px', padding: '6px 16px', fontSize: '13px' }}
           >
-            <List size={16} className="tab-icon" />
-            Activity
+            <List size={16} /> Activity
           </button>
           <button
             onClick={() => setActiveTab('report')}
-            className={`nav-tab ${activeTab === 'report' ? 'active' : ''}`}
+            className={`tab-btn small ${activeTab === 'report' ? 'active report' : ''}`}
+            style={{ borderRadius: '8px', padding: '6px 16px', fontSize: '13px' }}
           >
-            <FileText size={16} className="tab-icon" />
-            Report
+            <FileText size={16} /> Report
           </button>
         </div>
 
-        <div className="nav-controls">
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
           {activeTab === 'logs' && (
             <>
               <button
                 onClick={() => setReverseSort(!reverseSort)}
-                className="btn-secondary"
+                className="secondary-btn small"
                 title={reverseSort ? "Oldest First" : "Latest First"}
+                style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: '6px' }}
               >
                 {reverseSort ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
                 Sort
               </button>
-              <div className="search-input-wrapper">
-                <Search size={14} style={{ color: 'var(--ink-faint)', flexShrink: 0 }} />
+              <div className="glass-panel" style={{ padding: '4px 12px', display: 'flex', alignItems: 'center', gap: '8px', borderRadius: '8px' }}>
                 <input
                   type="text"
                   placeholder="Search logs..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  style={{ background: 'transparent', border: 'none', color: 'white', outline: 'none', fontSize: '12px', width: '150px' }}
                 />
-                {searchQuery && (
-                  <X size={14} style={{ cursor: 'pointer', color: 'var(--ink-muted)' }} onClick={() => setSearchQuery("")} />
-                )}
+                <X size={14} style={{ cursor: 'pointer', opacity: searchQuery ? 0.5 : 0 }} onClick={() => setSearchQuery("")} />
               </div>
             </>
           )}
           <button
             onClick={generateReport}
             disabled={generating}
-            className="btn-primary"
+            className="primary-btn small"
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
           >
             <RefreshCw size={14} className={generating ? 'pulse' : ''} />
             {generating ? 'Summarizing...' : 'Summarize Day'}
@@ -714,96 +568,70 @@ const Dashboard = () => {
         </div>
       </nav>
 
-      {/* ═══ DATE SUBTITLE ═══ */}
-      <div style={{
-        padding: '12px 24px 0',
-        display: 'flex',
-        alignItems: 'baseline',
-        gap: '12px'
-      }}>
-        <h2 style={{
-          fontFamily: 'var(--font-display)',
-          fontSize: '1.5rem',
-          fontWeight: 400,
-          color: 'var(--ink-primary)',
-          letterSpacing: '-0.01em',
-        }}>
-          {formatDate(activeDate)}
-        </h2>
-        {events.length > 0 && (
-          <span style={{
-            fontSize: '0.78rem',
-            color: 'var(--ink-muted)',
-          }}>
-            {events.length} {events.length === 1 ? 'entry' : 'entries'}
-          </span>
-        )}
-      </div>
-
-      {/* ═══ MAIN CONTENT ═══ */}
-      <main className="content-area">
+      <main style={{ flex: 1, overflowY: 'auto', padding: '20px' }} className="custom-scrollbar">
         {activeTab === 'logs' ? (
           <div className="event-list">
             {filteredEvents.length > 0 ? filteredEvents.map((event, i) => (
-              <div
-                key={event.id || i}
-                className="event-row"
-                style={{ animationDelay: `${Math.min(i * 30, 300)}ms` }}
-              >
-                <div className="event-card">
-                  <div className={`event-icon ${getIconClass(event.source, event.activity_label)}`}>
-                    {getActivityIcon(event.source, event.activity_label)}
-                  </div>
-                  <div className="event-body">
-                    <div className="event-header">
-                      <span className="event-title">{event.window_title || event.app}</span>
-                      <span className="event-time">
-                        {new Date(event.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
+              <div key={i} className="event-row-container" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                <div className="event-item" style={{ flex: 1, border: '1px solid rgba(255,255,255,0.03)', position: 'relative' }}>
+                  <div style={{ display: 'flex', gap: '12px', width: '100%' }}>
+                    <div className="stat-icon" style={{ width: '32px', height: '32px' }}>
+                      {getActivityIcon(event.source, event.activity_label)}
                     </div>
-                    <div className="event-meta">
-                      <span className="event-app-name">{event.app}</span>
-                      {(() => {
-                        try {
-                          const p = JSON.parse(event.payload_json);
-                          if (p.ai_summary) return <span className="ai-badge">AI: {p.ai_summary}</span>;
-                          if (p.url) return <span className="event-url">{p.url}</span>;
-                        } catch (e) { }
-                        return null;
-                      })()}
-                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="flex-between">
+                        <p className="event-title" style={{ fontSize: '14px' }}>{event.window_title || event.app}</p>
+                        <span className="timestamp" style={{ fontSize: '10px', opacity: 0.6 }}>
+                          {new Date(event.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <div className="event-meta" style={{ marginTop: '2px', fontSize: '11px' }}>
+                        <span style={{ fontWeight: '500' }}>{event.app}</span>
+                        {(() => {
+                          try {
+                            const p = JSON.parse(event.payload_json);
+                            if (p.ai_summary) return <span className="ai-badge" style={{ fontSize: '11px', padding: '2px 8px', color: '#a3e635', background: 'rgba(163, 230, 53, 0.1)' }}>🤖 {p.ai_summary}</span>;
+                            if (p.url) return <span className="url">{p.url}</span>;
+                          } catch (e) { }
+                          return null;
+                        })()}
+                      </div>
 
-                    {editingNoteId === event.id ? (
-                      <div className="note-inline-editor">
-                        <input
-                          type="text"
-                          autoFocus
-                          value={noteText}
-                          onChange={(e) => setNoteText(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveNote(event.id);
-                            if (e.key === 'Escape') setEditingNoteId(null);
-                          }}
-                          placeholder="Add a note..."
-                        />
-                        <button onClick={() => saveNote(event.id)} className="primary-btn small">Save</button>
-                        <button onClick={() => setEditingNoteId(null)} className="secondary-btn small">Cancel</button>
-                      </div>
-                    ) : event.note && (
-                      <div className="note-display">
-                        "{event.note}"
-                      </div>
-                    )}
+                      {editingNoteId === event.id ? (
+                        <div style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
+                          <input
+                            type="text"
+                            autoFocus
+                            value={noteText}
+                            onChange={(e) => setNoteText(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') saveNote(event.id);
+                              if (e.key === 'Escape') setEditingNoteId(null);
+                            }}
+                            className="glass-panel"
+                            style={{ flex: 1, padding: '6px 10px', fontSize: '13px', background: 'rgba(255,255,255,0.05)', border: '1px solid #a3e635', color: 'white', outline: 'none', borderRadius: '6px' }}
+                            placeholder="Add a note..."
+                          />
+                          <button onClick={() => saveNote(event.id)} className="primary-btn small" style={{ borderRadius: '6px' }}>Save</button>
+                          <button onClick={() => setEditingNoteId(null)} className="secondary-btn small" style={{ borderRadius: '6px' }}>Cancel</button>
+                        </div>
+                      ) : event.note && (
+                        <div className="note-display" style={{ marginTop: '8px', padding: '8px 12px', fontSize: '12px' }}>
+                          "{event.note}"
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                <div className="event-actions">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <button
                     onClick={() => deleteEvent(event.id)}
-                    className="event-action-btn delete"
+                    className="icon-btn hover-scale delete-row-btn"
+                    style={{ opacity: 0.3, transition: 'all 0.2s', padding: '10px' }}
                     title="Delete Log"
                   >
-                    <Trash2 size={15} />
+                    <Trash2 size={16} />
                   </button>
                   <button
                     onClick={() => {
@@ -814,35 +642,30 @@ const Dashboard = () => {
                         setNoteText(event.note || "");
                       }
                     }}
-                    className={`event-action-btn ${event.note ? 'has-note' : ''}`}
+                    className={`icon-btn hover-scale note-action-btn ${editingNoteId === event.id ? 'active' : ''}`}
+                    style={{
+                      opacity: event.note || editingNoteId === event.id ? 1 : 0.4,
+                      transition: 'all 0.2s',
+                      padding: '10px'
+                    }}
                     title="Add Note"
                   >
-                    <MessageSquare size={15} />
+                    <MessageSquare size={18} color={editingNoteId === event.id ? "#a3e635" : (event.note ? "#2dd4bf" : "currentColor")} />
                   </button>
                 </div>
               </div>
             )) : (
-              <div className="empty-state" style={{ height: 'calc(100vh - 220px)' }}>
-                <Activity size={40} className="empty-state-icon" />
-                <h3>No activity yet</h3>
-                <p>Nothing recorded for this date. Start working and your activity will appear here.</p>
+              <div style={{ textAlign: 'center', padding: '40px', color: '#64748b' }}>
+                <Activity size={32} style={{ opacity: 0.2, marginBottom: '12px' }} />
+                <p>No activity recorded for this date.</p>
               </div>
             )}
           </div>
         ) : (
           <div className="report-container">
-            {/* A2UI Interactive Surface — Session Analytics */}
-            {sessions.length > 0 && (
-              <A2UISurface
-                messages={a2uiMessages}
-                title="Day Analytics"
-                onAction={handleA2UIAction}
-              />
-            )}
-
             {report ? (
               <div>
-                <div className="report-actions" style={{ marginTop: sessions.length > 0 ? '20px' : 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px', gap: '10px' }}>
                   <button
                     onClick={() => {
                       const blob = new Blob([report.report_md], { type: 'text/markdown' });
@@ -853,9 +676,10 @@ const Dashboard = () => {
                       a.click();
                       URL.revokeObjectURL(url);
                     }}
-                    className="btn-secondary"
+                    className="secondary-btn small"
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                   >
-                    <Download size={14} /> Download .md
+                    <Download size={14} /> Download MD
                   </button>
                 </div>
                 <div className="markdown-content">
@@ -863,11 +687,11 @@ const Dashboard = () => {
                 </div>
               </div>
             ) : (
-              <div className="empty-state" style={{ height: sessions.length > 0 ? 'auto' : 'calc(100vh - 220px)', minHeight: sessions.length > 0 ? '200px' : '300px', paddingTop: sessions.length > 0 ? '20px' : '40px' }}>
-                <FileText size={40} className="empty-state-icon" />
+              <div className="empty-state" style={{ minHeight: '300px' }}>
+                <FileText size={40} color="#64748b" style={{ opacity: 0.3 }} />
                 <h3>Today's Summary</h3>
                 <p>Analyze your progress and generate a daily report.</p>
-                <button onClick={generateReport} className="btn-primary" style={{ marginTop: '20px' }}>
+                <button onClick={generateReport} className="primary-btn" style={{ marginTop: '20px' }}>
                   Generate Report
                 </button>
               </div>
@@ -876,21 +700,41 @@ const Dashboard = () => {
         )}
       </main>
 
-      {/* ═══ FLOATING NOTE BUTTON (FAB) ═══ */}
-      <div className="fab-container">
+      {/* Persistent Mini-Note Widget */}
+      <div
+        style={{
+          position: 'fixed',
+          bottom: '20px',
+          right: '20px',
+          zIndex: 100,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: '8px'
+        }}
+      >
         {miniNoteOpen && (
-          <div className="fab-panel">
-            <div className="fab-panel-header">
-              <div className="fab-panel-title">
-                <Edit3 size={14} />
-                Quick Note
+          <div
+            className="glass-panel"
+            style={{
+              width: '300px',
+              padding: '16px',
+              borderRadius: '12px',
+              border: '1px solid rgba(163, 230, 53, 0.2)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.3)'
+            }}
+          >
+            <div className="flex-between" style={{ marginBottom: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Edit3 size={14} color="#a3e635" />
+                <span style={{ fontSize: '12px', fontWeight: '600', color: '#a3e635' }}>Quick Note</span>
               </div>
-              <button onClick={() => setMiniNoteOpen(false)} className="btn-icon" style={{ padding: '4px' }}>
+              <button onClick={() => setMiniNoteOpen(false)} className="icon-btn" style={{ padding: '4px' }}>
                 <Minimize2 size={14} />
               </button>
             </div>
-            <p className="fab-panel-context">
-              Current: {events[0]?.app || 'No activity'} {events[0]?.window_title ? `— ${events[0].window_title.slice(0, 30)}...` : ''}
+            <p style={{ fontSize: '10px', color: '#64748b', marginBottom: '8px' }}>
+              Current: {events[0]?.app || 'No activity'} {events[0]?.window_title ? `- ${events[0].window_title.slice(0, 30)}...` : ''}
             </p>
             <textarea
               value={miniNoteText}
@@ -899,141 +743,151 @@ const Dashboard = () => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveMiniNote(); }
               }}
               placeholder="What are you working on?"
+              style={{
+                width: '100%',
+                minHeight: '60px',
+                background: 'rgba(0,0,0,0.2)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '8px',
+                padding: '10px',
+                color: 'white',
+                fontSize: '12px',
+                resize: 'none',
+                outline: 'none'
+              }}
             />
-            <div className="fab-panel-actions">
-              <button onClick={saveMiniNote} className="primary-btn small">Save Note</button>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+              <button onClick={saveMiniNote} className="primary-btn small" style={{ fontSize: '11px', padding: '6px 14px' }}>
+                Save Note
+              </button>
             </div>
           </div>
         )}
         <button
           onClick={() => setMiniNoteOpen(!miniNoteOpen)}
-          className="fab-button"
+          className="primary-btn"
+          style={{
+            width: '48px',
+            height: '48px',
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 4px 20px rgba(163, 230, 53, 0.3)',
+            padding: 0
+          }}
         >
           {miniNoteOpen ? <X size={20} /> : <Edit3 size={20} />}
         </button>
       </div>
 
-      {/* ═══ SETTINGS MODAL ═══ */}
+      {/* MODALS */}
       {settingsOpen && (
         <div className="modal-overlay">
-          <div className="modal-panel">
-            <div className="modal-header">
-              <div className="modal-title">
-                <Settings size={18} style={{ color: 'var(--ink-muted)' }} />
-                <span>Settings</span>
+          <div className="glass-panel modal-content" style={{ width: '380px', padding: '24px' }}>
+            <div className="flex-between" style={{ marginBottom: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Settings size={18} color="#2dd4bf" />
+                <span style={{ fontWeight: '600' }}>Settings</span>
               </div>
-              <button onClick={() => setSettingsOpen(false)} className="btn-icon"><X size={18} /></button>
+              <button onClick={() => setSettingsOpen(false)} className="icon-btn"><X size={18} /></button>
             </div>
-
-            {/* General */}
-            <div className="settings-section">
-              <div className="settings-section-title">General</div>
-              <div className="settings-row">
-                <div className="settings-row-label">
-                  <p>Recording</p>
-                  <p>Capture active applications</p>
-                </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div className="flex-between">
+                <div><p style={{ fontSize: '13px', fontWeight: '500' }}>Recording</p><p style={{ fontSize: '11px', color: '#64748b' }}>Capture active applications</p></div>
                 <input type="checkbox" checked={appSettings.trackingEnabled} onChange={(e) => updateSetting('trackingEnabled', e.target.checked)} />
               </div>
-              <div className="settings-row">
-                <div className="settings-row-label">
-                  <p>Native Alerts</p>
-                  <p>macOS system notifications</p>
-                </div>
+              <div className="flex-between">
+                <div><p style={{ fontSize: '13px', fontWeight: '500' }}>Native Alerts</p><p style={{ fontSize: '11px', color: '#64748b' }}>macOS system notifications</p></div>
                 <input type="checkbox" checked={appSettings.notificationsEnabled} onChange={(e) => updateSetting('notificationsEnabled', e.target.checked)} />
               </div>
-            </div>
 
-            {/* Intelligence */}
-            <div className="settings-section">
-              <div className="settings-section-title">Intelligence</div>
-              <div style={{ marginBottom: '12px' }}>
-                <label className="settings-input-label">LLM API Key (optional for local)</label>
-                <input
-                  type="password"
-                  value={appSettings.llmApiKey}
-                  onChange={(e) => updateSetting('llmApiKey', e.target.value)}
-                  placeholder="sk-..."
-                  className="settings-input"
-                />
-              </div>
-              <div>
-                <label className="settings-input-label">Model Name</label>
-                <input
-                  type="text"
-                  value={appSettings.llmModel}
-                  onChange={(e) => updateSetting('llmModel', e.target.value)}
-                  placeholder="gemma3:1b"
-                  className="settings-input"
-                />
-              </div>
-            </div>
+              <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '16px', marginTop: '8px' }}>
+                <p style={{ fontSize: '12px', fontWeight: '600', color: '#a3e635', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Intelligence Settings</p>
 
-            {/* Danger Zone */}
-            <div className="settings-section">
-              <div className="settings-section-title danger">Danger Zone</div>
-              <div className="settings-row">
-                <div className="settings-row-label">
-                  <p>Clear Day's Data</p>
-                  <p>Delete everything for {activeDate}</p>
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>LLM API Key (optional for local)</label>
+                  <input
+                    type="password"
+                    value={appSettings.llmApiKey}
+                    onChange={(e) => updateSetting('llmApiKey', e.target.value)}
+                    placeholder="sk-..."
+                    style={{ width: '100%', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', padding: '8px', color: 'white', fontSize: '12px' }}
+                  />
                 </div>
-                <button onClick={clearDayData} className="btn-danger">
-                  <Trash2 size={14} /> Clear
+
+                <div>
+                  <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>Model Name</label>
+                  <input
+                    type="text"
+                    value={appSettings.llmModel}
+                    onChange={(e) => updateSetting('llmModel', e.target.value)}
+                    placeholder="gemma3:1b"
+                    style={{ width: '100%', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', padding: '8px', color: 'white', fontSize: '12px' }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '16px', marginTop: '8px' }}>
+                <p style={{ fontSize: '12px', fontWeight: '600', color: '#ef4444', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Danger Zone</p>
+                <div className="flex-between">
+                  <div>
+                    <p style={{ fontSize: '13px', fontWeight: '500' }}>Clear Day's Data</p>
+                    <p style={{ fontSize: '11px', color: '#64748b' }}>Delete everything for {activeDate}</p>
+                  </div>
+                  <button
+                    onClick={clearDayData}
+                    className="secondary-btn small"
+                    style={{ borderColor: '#ef4444', color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)' }}
+                  >
+                    <Trash2 size={14} style={{ marginRight: '6px' }} /> Clear {activeDate}
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '16px', marginTop: '8px' }}>
+                <p style={{ fontSize: '12px', fontWeight: '600', color: '#64748b', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Support</p>
+                <button
+                  onClick={fetchLogs}
+                  className="secondary-btn small"
+                  style={{ width: '100%', justifyContent: 'center', gap: '8px' }}
+                >
+                  <Terminal size={14} /> View System Diagnostics
                 </button>
               </div>
-            </div>
-
-            {/* Support */}
-            <div className="settings-section">
-              <div className="settings-section-title">Support</div>
-              <button
-                onClick={fetchLogs}
-                className="btn-secondary"
-                style={{ width: '100%', justifyContent: 'center' }}
-              >
-                <Terminal size={14} /> View System Diagnostics
-              </button>
 
               {viewingLogs && (
-                <div className="system-logs-panel">
-                  <div className="system-logs-header">
-                    <span>System Logs (Last 50)</span>
-                    <button onClick={() => setViewingLogs(false)}>Close</button>
+                <div className="glass-panel" style={{ marginTop: '16px', maxHeight: '200px', overflowY: 'auto', padding: '10px', background: 'rgba(0,0,0,0.4)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                  <div className="flex-between" style={{ marginBottom: '8px' }}>
+                    <span style={{ fontSize: '10px', color: '#a3e635' }}>System Logs (Last 50)</span>
+                    <button onClick={() => setViewingLogs(false)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '10px' }}>Close</button>
                   </div>
                   {systemLogs.length > 0 ? systemLogs.map((log, idx) => (
-                    <div key={idx} className={`log-entry ${log.level === 'ERROR' ? 'error' : ''}`}>
-                      <span className="log-entry-time">[{new Date(log.ts).toLocaleTimeString()}]</span> {log.message}
+                    <div key={idx} style={{ fontSize: '10px', color: log.level === 'ERROR' ? '#f87171' : '#cbd5e1', marginBottom: '4px', fontFamily: 'monospace', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '2px' }}>
+                      <span style={{ opacity: 0.5 }}>[{new Date(log.ts).toLocaleTimeString()}]</span> {log.message}
                     </div>
-                  )) : <p style={{ fontSize: '0.7rem', color: 'var(--ink-faint)' }}>No logs found.</p>}
+                  )) : <p style={{ fontSize: '10px', color: '#64748b' }}>No logs found.</p>}
                 </div>
               )}
             </div>
-
-            <button
-              onClick={() => setSettingsOpen(false)}
-              className="btn-primary"
-              style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }}
-            >
-              Save & Close
-            </button>
+            <button onClick={() => setSettingsOpen(false)} className="primary-btn" style={{ width: '100%', marginTop: '24px', background: '#333' }}>Save & Close</button>
           </div>
         </div>
       )}
 
-      {/* ═══ QUICK NOTE TOAST ═══ */}
       {quickNoteOpen && (
         <div className="toast-container">
           <div className="toast-content" style={{ padding: '20px' }}>
             <div className="flex-between" style={{ marginBottom: '12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <MessageSquare size={16} style={{ color: 'var(--vermillion)' }} />
+                <MessageSquare size={16} color="#a3e635" />
                 <span style={{ fontWeight: '600', fontSize: '14px' }}>What did you do?</span>
               </div>
-              <button onClick={() => { setQuickNoteOpen(false); setTargetEvent(null); }} className="btn-icon"><X size={16} /></button>
+              <button onClick={() => { setQuickNoteOpen(false); setTargetEvent(null); }} className="icon-btn"><X size={16} /></button>
             </div>
-            <p style={{ fontSize: '0.75rem', color: 'var(--ink-muted)', marginBottom: '10px' }}>
-              Logged: <span style={{ color: 'var(--ink-primary)' }}>{(targetEvent?.app || events[0]?.app) || 'None'}</span>
-              {targetEvent?.window_title && <span style={{ opacity: 0.6, marginLeft: '4px' }}>— {targetEvent.window_title}</span>}
+            <p style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '10px' }}>
+              Logged: <span style={{ color: '#f1f5f9' }}>{(targetEvent?.app || events[0]?.app) || 'None'}</span>
+              {targetEvent?.window_title && <span style={{ opacity: 0.6, marginLeft: '4px' }}>- {targetEvent.window_title}</span>}
             </p>
             <textarea
               ref={quickNoteRef}
@@ -1045,7 +899,7 @@ const Dashboard = () => {
               }}
               placeholder="Add some notes..."
               className="note-textarea"
-              style={{ minHeight: '80px', marginBottom: '16px' }}
+              style={{ minHeight: '80px', fontSize: '13px', padding: '12px', marginBottom: '16px' }}
               autoFocus
             />
             <div className="flex-end" style={{ gap: '8px' }}>
@@ -1055,13 +909,22 @@ const Dashboard = () => {
           </div>
         </div>
       )}
+
+      {/* Hover Styles for event items (injected via style tag for simplicity) */}
+      <style>{`
+        .event-item:hover .icon-btn { opacity: 1 !important; transform: scale(1.2); }
+        .hover-scale:hover { transform: scale(1.2) !important; color: #a3e635 !important; }
+        .delete-row-btn:hover { color: #ef4444 !important; }
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center; }
+        .markdown-content { font-size: 14px; line-height: 1.6; color: #d1d5db; }
+        .markdown-content h1, .markdown-content h2 { margin-top: 20px; color: #fff; }
+      `}</style>
     </div>
   );
 };
 
-/* ═══════════════════════════════════════════════
-   FLOATING NOTE WIDGET — Electron overlay
-   ═══════════════════════════════════════════════ */
 const FloatingNoteWidget = () => {
   const [expanded, setExpanded] = useState(false);
   const [noteText, setNoteText] = useState("");
@@ -1080,21 +943,29 @@ const FloatingNoteWidget = () => {
 
   return (
     <div style={{
-      width: '100%', height: '100%',
-      display: 'flex', flexDirection: 'column',
-      justifyContent: 'flex-end', alignItems: 'flex-end',
+      width: '100%',
+      height: '100%',
+      display: 'flex',
+      flexDirection: 'column',
+      justifyContent: 'flex-end',
+      alignItems: 'flex-end',
       background: 'transparent'
     }}>
       {expanded && (
-        <div className="fab-panel" style={{ marginBottom: '8px' }}>
-          <div className="fab-panel-header">
-            <div className="fab-panel-title">
-              <Edit3 size={14} />
-              Write a Note
-            </div>
-            <button onClick={toggleExpanded} className="btn-icon" style={{ padding: '4px' }}>
-              <Minimize2 size={14} />
-            </button>
+        <div className="glass-panel" style={{
+          width: '300px',
+          height: '180px',
+          padding: '16px',
+          marginBottom: '8px',
+          borderRadius: '12px',
+          border: '1px solid rgba(163, 230, 53, 0.2)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px'
+        }}>
+          <div className="flex-between">
+            <span style={{ fontSize: '12px', fontWeight: '600', color: '#a3e635' }}>Write a Note</span>
+            <button onClick={toggleExpanded} className="icon-btn"><Minimize2 size={14} /></button>
           </div>
           <textarea
             value={noteText}
@@ -1105,13 +976,37 @@ const FloatingNoteWidget = () => {
             }}
             placeholder="About current window..."
             autoFocus
+            style={{
+              flex: 1,
+              background: 'rgba(0,0,0,0.2)',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '10px',
+              color: 'white',
+              fontSize: '12px',
+              resize: 'none',
+              outline: 'none'
+            }}
           />
-          <div className="fab-panel-actions">
+          <div className="flex-end">
             <button onClick={saveNote} className="primary-btn small">Save</button>
           </div>
         </div>
       )}
-      <button onClick={toggleExpanded} className="fab-button">
+      <button
+        onClick={toggleExpanded}
+        className="primary-btn"
+        style={{
+          width: '48px',
+          height: '48px',
+          borderRadius: '24px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxShadow: '0 4px 15px rgba(0,0,0,0.3)',
+          padding: 0
+        }}
+      >
         {expanded ? <X size={20} /> : <Edit3 size={20} />}
       </button>
 
@@ -1123,14 +1018,16 @@ const FloatingNoteWidget = () => {
   );
 };
 
-/* ═══════════════════════════════════════════════
-   APP — Root router
-   ═══════════════════════════════════════════════ */
 const App = () => {
   const params = new URLSearchParams(window.location.search);
   const mode = params.get('mode');
-  if (mode === 'popup') return <PopupNote />;
-  if (mode === 'floating') return <FloatingNoteWidget />;
+
+  if (mode === 'popup') {
+    return <PopupNote />;
+  }
+  if (mode === 'floating') {
+    return <FloatingNoteWidget />;
+  }
   return <Dashboard />;
 };
 
