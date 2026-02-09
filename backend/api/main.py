@@ -45,7 +45,19 @@ def load_api_keys():
 load_api_keys()
 
 async def verify_api_key(api_key: str = Depends(API_KEY_HEADER)):
-    """Verify API key for authentication"""
+    """
+    Verify API key for authentication.
+    For local packaged apps (Electron) and development, API key is optional.
+    """
+    # If running in packaged mode (local desktop app), skip API key requirement
+    if os.environ.get("DOCME_DATA_PATH"):
+        return None  # Skip auth for local Electron app
+
+    # In development mode, skip API key requirement
+    if os.environ.get("DOCME_ENV", "development") != "production":
+        return None
+
+    # For remote/server deployments, require API key
     if api_key in VALID_API_KEYS:
         return api_key
     raise HTTPException(
@@ -92,13 +104,21 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 # Restrictive CORS configuration
-_allowed_origins = os.environ.get("DOCME_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000").split(",")
+# For packaged Electron apps, we need to allow "null" origin (file:// protocol)
+_allowed_origins_str = os.environ.get("DOCME_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173")
+_allowed_origins = _allowed_origins_str.split(",")
+
+# Check if running in packaged mode (DOCME_DATA_PATH is set by Electron)
+if os.environ.get("DOCME_DATA_PATH"):
+    # Allow all origins for packaged app (Electron file:// sends "null" origin)
+    _allowed_origins = ["*"]
+    logger.info("Running in packaged mode - allowing all origins for local Electron app")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["X-API-Key", "Content-Type"],
 )
 
@@ -284,10 +304,11 @@ async def health(request: Request):
     """
     Enhanced health check endpoint with system status.
     """
+    from sqlalchemy import text
     db = SessionLocal()
     try:
         # Check database connectivity
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
 
         return {
             "status": "ok",
